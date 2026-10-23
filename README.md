@@ -30,7 +30,7 @@ CLIs you run do themselves. See [docs/SECURITY.md](docs/SECURITY.md).
 ## Requirements
 
 - macOS 14 or later (Apple silicon tested)
-- Xcode 16 or a Swift 6 toolchain
+- Xcode 26 with Swift 6.2 or later (developed with Swift 6.3)
 
 ## Build and test
 
