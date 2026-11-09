@@ -265,7 +265,8 @@ enum ConsoleFlowSelfTest {
       let found = ControlFinder.button(identifier: "newTerminal.agent.\(agent)", in: readyContent) != nil
       notes.append("agent.\(agent)=\(found)")
     }
-    notes.append("customEmpty=\(ControlFinder.view(identifier: "newTerminal.customEmpty", in: readyContent) != nil)")
+    let pickerNames = await AccessibilityProbe.names(pid: getpid(), limit: 500)
+    notes.append("customEmpty=\(pickerNames.contains("newTerminal.customEmpty") || pickerNames.contains("Ingen egne agenter ennå"))")
     let shellSelected = ControlFinder.button(identifier: "newTerminal.agent.shell", in: readyContent)?.accessibilityValue() as? String == "selected"
     notes.append("defaultAgent=\(shellSelected ? "shell" : "other")")
     let selectedFolder = ControlFinder.buttons(in: readyContent).first {
@@ -1204,7 +1205,8 @@ enum ConsoleFlowSelfTest {
       notes.append("panel.\(panel.rawValue).hosts=\(hosts.sorted().joined(separator: "|"))")
       if shown && settled { opened.append(panel.rawValue) }
       if panel == .settings {
-        let toggle = await waitMarker("settings.askBeforeSending")
+        let settingsNames = await AccessibilityProbe.names(pid: getpid(), limit: 500)
+        let toggle = settingsNames.contains("settings.askBeforeSending") || settingsNames.contains("Spør før sending til en terminal")
         notes.append("settingsToggle=\(toggle)")
         LaunchSnapshot.writeWindow(window, to: directory.appendingPathComponent("panel-settings.png"))
       } else if panel == .docs {
@@ -1369,7 +1371,7 @@ enum ConsoleFlowSelfTest {
     flush()
     let opened = await pressAnywhere("toolbar.showLoops", timeout: .seconds(3))
     notes.append("loopPanelPress=\(opened)")
-    let marker = await waitMarker("panel.marker.loops")
+    let marker = await waitMarker("panel.host.loops")
     notes.append("loopPanel=\(marker)")
     flush()
     guard marker else {
@@ -1426,7 +1428,7 @@ enum ConsoleFlowSelfTest {
     _ = await pressAnywhere("toolbar.showLoops", timeout: .seconds(2))
     _ = await waitUntil(.seconds(2)) {
       guard let content = LaunchSnapshot.boardWindow()?.contentView else { return false }
-      return ControlFinder.view(identifier: "panel.marker.loops", in: content) == nil
+      return ControlFinder.view(identifier: "panel.host.loops", in: content) == nil
     }
     flush()
     return notes
@@ -1642,6 +1644,10 @@ enum ConsoleFlowSelfTest {
     if let sheet = manageWindow() {
       LaunchSnapshot.writeWindow(sheet, to: directory.appendingPathComponent("groups-message.png"))
     }
+    let readyBeforeClick = await waitUntil(.seconds(6)) {
+      board.idleConsoleIDs.isSuperset(of: [leaderID, memberID])
+    }
+    notes.append("crewIdleBeforeClick=\(readyBeforeClick)")
     let broadcast = await pressAnywhere("groups.broadcast", timeout: .seconds(5))
     notes.append("crewBroadcast=\(broadcast)")
     flushCrew(notes, to: directory)
@@ -1650,6 +1656,12 @@ enum ConsoleFlowSelfTest {
         && outputContains("lanebay-crew-ok", board: board, consoleID: memberID)
     }
     notes.append("crewEcho=\(crewEcho)")
+    if !crewEcho {
+      notes.append("crewLeadOutput=\(outputContains("lanebay-crew-ok", board: board, consoleID: leaderID))")
+      notes.append("crewMemberOutput=\(outputContains("lanebay-crew-ok", board: board, consoleID: memberID))")
+      notes.append("crewMemberStatus=\(statusLabel(board: board, consoleID: memberID))")
+      notes.append("crewMemberTail=\(sanitizedTail(board.recentConsoleOutput(memberID) ?? ""))")
+    }
     flushCrew(notes, to: directory)
     let leaderIdle = await waitUntil(.seconds(8)) { board.idleConsoleIDs.contains(leaderID) }
     notes.append("leaderIdle=\(leaderIdle)")

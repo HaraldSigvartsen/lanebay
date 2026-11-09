@@ -1,5 +1,11 @@
 # Security
 
+## Local CLI control
+
+- The `lanebay` CLI connects to a Unix domain socket under Application Support. The directory is mode `0700`, the socket and per-launch token file are mode `0600`, and the server checks the peer user ID.
+- Agent tasks are limited to 1,500 characters and three hours. Context files are limited to 32 KiB; handoff notes are capped at 20 lines.
+- The control socket is local to the Mac. Lanebay never auto-approves an agent's own permission prompts.
+
 ## Local agent hook listener
 
 - `HookServer` binds only to IPv4 loopback (`127.0.0.1`) and retries randomized high-port candidates for each launch until one binds.
