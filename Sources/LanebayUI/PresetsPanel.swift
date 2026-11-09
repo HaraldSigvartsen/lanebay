@@ -72,64 +72,132 @@ public struct PresetsPanel: View {
     let agentKinds: [String]
     let onSend: (String, String?) -> Bool
 
+    /// Shown when no preset is stored yet. Pinned by `VerktoyPanelsTests`.
+    public static let emptyStateTitle = "Ingen maler ennå"
+
     public init(model: PresetsPanelModel, agentKinds: [String], onSend: @escaping (String, String?) -> Bool) {
         self.model = model
         self.agentKinds = agentKinds
         self.onSend = onSend
     }
 
+    private var canSave: Bool {
+        !model.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !model.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var canSend: Bool {
+        model.selectedPreset != nil && !model.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     public var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.sm) {
-            HStack {
-                Text("Saved prompts and commands").font(Typography.caption).foregroundStyle(Palette.secondaryInk)
-                Spacer()
-                Button { model.newPreset() } label: { Label("New", systemImage: "plus") }
-            }
-            HStack(spacing: 0) {
-                List(selection: Binding(get: { model.selectedID }, set: { id in
-                    if let preset = model.presets.first(where: { $0.id == id }) { model.select(preset) }
-                })) {
-                    ForEach(model.presets) { preset in
-                        VStack(alignment: .leading, spacing: Spacing.xxs) {
-                            Text(preset.name).font(Typography.bodyEmphasis).lineLimit(1)
-                            Text(preset.targetAgentKind ?? "Any agent").font(Typography.caption).foregroundStyle(Palette.mutedInk)
-                        }.tag(Optional(preset.id))
-                    }
+        VStack(alignment: .leading, spacing: DS.Space.lg) {
+            PanelSection("Maler", fillsHeight: true) {
+                HStack(spacing: DS.Space.xs) {
+                    Text("Saved prompts and commands")
+                        .font(DS.Font.caption)
+                        .foregroundStyle(DS.Color.secondaryInk)
+                    Spacer(minLength: 0)
+                    Button { model.newPreset() } label: { Label("New", systemImage: "plus") }
+                        .buttonStyle(.lbSecondary)
+                        .accessibilityIdentifier("presets.new")
                 }
-                .listStyle(.sidebar).frame(minWidth: 150, idealWidth: 180)
-                Rectangle().fill(Palette.border).frame(width: 1)
-                VStack(alignment: .leading, spacing: Spacing.xs) {
-                    TextField("Name", text: $model.name).textFieldStyle(.roundedBorder)
-                    Picker("Target", selection: $model.targetAgentKind) {
-                        Text("Any agent").tag(String?.none)
-                        ForEach(agentKinds, id: \.self) { kind in Text(kind.capitalized).tag(Optional(kind)) }
-                    }
-                    TextEditor(text: $model.text)
-                        .font(Typography.body).scrollContentBackground(.hidden)
-                        .padding(Spacing.xxs).background(Palette.raisedSurface, in: RoundedRectangle(cornerRadius: Spacing.radiusSmall))
-                        .overlay(RoundedRectangle(cornerRadius: Spacing.radiusSmall).stroke(Palette.border))
-                        .accessibilityLabel("Preset prompt or command")
-                    if let error = model.errorMessage {
-                        Text(error).font(Typography.caption).foregroundStyle(Palette.status(.error)).textSelection(.enabled)
-                    }
-                    HStack {
-                        if model.selectedID != nil {
-                            Button("Delete", role: .destructive) { model.deleteSelected() }
-                        }
-                        Spacer()
-                        Button("Save") { _ = model.save() }
-                            .disabled(model.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        Button { _ = onSend(model.text, model.targetAgentKind) } label: { Label("Send", systemImage: "arrow.up") }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(model.selectedPreset == nil || model.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    }
+
+                HStack(spacing: 0) {
+                    presetList
+                    Rectangle().fill(DS.Color.hairline).frame(width: 1)
+                    editor
                 }
-                .padding(Spacing.sm).frame(minWidth: 250)
+                .frame(maxHeight: .infinity)
             }
-            .overlay { RoundedRectangle(cornerRadius: Spacing.radiusSmall).stroke(Palette.border) }
-            .clipShape(RoundedRectangle(cornerRadius: Spacing.radiusSmall))
-            Text("Send targets running, idle consoles in the active workspace.").font(Typography.caption).foregroundStyle(Palette.mutedInk)
+
+            Text("Send targets running, idle consoles in the active workspace.")
+                .font(DS.Font.caption)
+                .foregroundStyle(DS.Color.mutedInk)
         }
-        .padding(Spacing.sm).background(Palette.surface)
+        .padding(DS.Space.lg)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    @ViewBuilder private var presetList: some View {
+        if model.presets.isEmpty {
+            EmptyStateView(
+                symbol: "text.badge.plus",
+                title: Self.emptyStateTitle,
+                message: "Lagre et prompt eller en kommando du bruker ofte.",
+                actionTitle: "Ny mal",
+                action: { model.newPreset() },
+                identifier: "presets.empty")
+            .frame(minWidth: 150, idealWidth: 180)
+        } else {
+            List(selection: Binding(get: { model.selectedID }, set: { id in
+                if let preset = model.presets.first(where: { $0.id == id }) { model.select(preset) }
+            })) {
+                ForEach(model.presets) { preset in
+                    let isSelected = model.selectedID == preset.id
+                    PanelRow(isSelected: isSelected) {
+                        VStack(alignment: .leading, spacing: DS.Space.xxs) {
+                            Text(preset.name)
+                                .font(DS.Font.bodyEmphasis)
+                                .foregroundStyle(isSelected ? DS.Color.accentInk : DS.Color.ink)
+                                .lineLimit(1)
+                            Text(preset.targetAgentKind ?? "Any agent")
+                                .font(DS.Font.caption)
+                                .foregroundStyle(DS.Color.mutedInk)
+                        }
+                    }
+                    .tag(Optional(preset.id))
+                }
+            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .frame(minWidth: 150, idealWidth: 180)
+            .accessibilityIdentifier("presets.list")
+        }
+    }
+
+    private var editor: some View {
+        VStack(alignment: .leading, spacing: DS.Space.xs) {
+            FormField("Navn") {
+                TextField("Navn", text: $model.name)
+                    .textFieldStyle(.lbField)
+                    .accessibilityIdentifier("presets.name")
+            }
+            FormField("Mål") {
+                Picker("Mål", selection: $model.targetAgentKind) {
+                    Text("Alle agenter").tag(String?.none)
+                    ForEach(agentKinds, id: \.self) { kind in Text(kind.capitalized).tag(Optional(kind)) }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .accessibilityIdentifier("presets.target")
+            }
+            FormField("Prompt eller kommando") {
+                TextEditor(text: $model.text)
+                    .lbEditor(minHeight: 120)
+                    .accessibilityLabel("Preset prompt or command")
+            }
+            if let error = model.errorMessage {
+                FormStatus(error, tone: .error)
+            }
+            HStack(spacing: DS.Space.xs) {
+                if model.selectedID != nil {
+                    Button("Slett", role: .destructive) { model.deleteSelected() }
+                        .buttonStyle(.lbGhost)
+                        .accessibilityIdentifier("presets.delete")
+                }
+                Spacer(minLength: 0)
+                Button("Lagre") { _ = model.save() }
+                    .buttonStyle(.lbSecondary)
+                    .disabled(!canSave)
+                    .accessibilityIdentifier("presets.save")
+                Button { _ = onSend(model.text, model.targetAgentKind) } label: { Label("Send", systemImage: "arrow.up") }
+                    .buttonStyle(.lbPrimary)
+                    .disabled(!canSend)
+                    .accessibilityIdentifier("presets.send")
+            }
+        }
+        .padding(DS.Space.sm)
+        .frame(minWidth: 250)
     }
 }

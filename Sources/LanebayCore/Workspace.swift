@@ -8,10 +8,19 @@ public struct Workspace: Codable, Identifiable, Sendable, Equatable {
     public var nodes: [Node]
     public var groups: [Group]
     public var loops: [Loop]
+    /// Wires drawn between cards so their agents can talk.
+    public var wires: [Wire]
+    /// The chat panel's transcript for this workspace (capped when saved).
+    public var chat: [ChatEntry] = []
+    /// Chat panel layout for this workspace.
+    public var chatOpen: Bool = true
+    public var chatWidth: Double = 360
+    /// Scheduled messages that start cards and run without anyone watching the board.
+    public var cronJobs: [CronJob] = []
     public var createdAt: Date
     public var updatedAt: Date
 
-    public init(id: UUID = UUID(), name: String, version: Int = 1, repos: [URL] = [], nodes: [Node] = [], groups: [Group] = [], loops: [Loop] = [], createdAt: Date = .now, updatedAt: Date = .now) {
+    public init(id: UUID = UUID(), name: String, version: Int = 1, repos: [URL] = [], nodes: [Node] = [], groups: [Group] = [], loops: [Loop] = [], wires: [Wire] = [], createdAt: Date = .now, updatedAt: Date = .now) {
         self.id = id
         self.name = name
         self.version = version
@@ -19,8 +28,32 @@ public struct Workspace: Codable, Identifiable, Sendable, Equatable {
         self.nodes = nodes
         self.groups = groups
         self.loops = loops
+        self.wires = wires
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, version, repos, nodes, groups, loops, wires, chat, chatOpen, chatWidth, cronJobs, createdAt, updatedAt
+    }
+
+    /// Files from before wires (and other later fields) still open.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        version = try c.decodeIfPresent(Int.self, forKey: .version) ?? 1
+        repos = try c.decodeIfPresent([URL].self, forKey: .repos) ?? []
+        nodes = try c.decodeIfPresent([Node].self, forKey: .nodes) ?? []
+        groups = try c.decodeIfPresent([Group].self, forKey: .groups) ?? []
+        loops = try c.decodeIfPresent([Loop].self, forKey: .loops) ?? []
+        wires = try c.decodeIfPresent([Wire].self, forKey: .wires) ?? []
+        chat = try c.decodeIfPresent([ChatEntry].self, forKey: .chat) ?? []
+        chatOpen = try c.decodeIfPresent(Bool.self, forKey: .chatOpen) ?? true
+        chatWidth = try c.decodeIfPresent(Double.self, forKey: .chatWidth) ?? 360
+        cronJobs = try c.decodeIfPresent([CronJob].self, forKey: .cronJobs) ?? []
+        createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? .now
+        updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt) ?? .now
     }
 }
 
@@ -41,16 +74,17 @@ public struct Node: Codable, Identifiable, Sendable, Equatable {
     public var cwd: URL
     public var frame: NodeFrame
     public var profileID: String?
+    public var model: String?
     public var title: String
     public var notStarted: Bool
 
-    public init(id: UUID = UUID(), kind: NodeKind, agentID: String? = nil, cwd: URL, frame: NodeFrame, profileID: String? = nil, title: String, notStarted: Bool = false) {
+    public init(id: UUID = UUID(), kind: NodeKind, agentID: String? = nil, cwd: URL, frame: NodeFrame, profileID: String? = nil, model: String? = nil, title: String, notStarted: Bool = false) {
         self.id = id; self.kind = kind; self.agentID = agentID; self.cwd = cwd; self.frame = frame
-        self.profileID = profileID; self.title = title; self.notStarted = notStarted
+        self.profileID = profileID; self.model = model; self.title = title; self.notStarted = notStarted
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, kind, agentID, cwd, frame, profileID, title, notStarted
+        case id, kind, agentID, cwd, frame, profileID, model, title, notStarted
         case dormant // legacy key
     }
 
@@ -62,6 +96,7 @@ public struct Node: Codable, Identifiable, Sendable, Equatable {
         cwd = try container.decode(URL.self, forKey: .cwd)
         frame = try container.decode(NodeFrame.self, forKey: .frame)
         profileID = try container.decodeIfPresent(String.self, forKey: .profileID)
+        model = try container.decodeIfPresent(String.self, forKey: .model)
         title = try container.decode(String.self, forKey: .title)
         notStarted = try container.decodeIfPresent(Bool.self, forKey: .notStarted)
             ?? container.decodeIfPresent(Bool.self, forKey: .dormant) ?? false // legacy key
@@ -75,6 +110,7 @@ public struct Node: Codable, Identifiable, Sendable, Equatable {
         try container.encode(cwd, forKey: .cwd)
         try container.encode(frame, forKey: .frame)
         try container.encodeIfPresent(profileID, forKey: .profileID)
+        try container.encodeIfPresent(model, forKey: .model)
         try container.encode(title, forKey: .title)
         try container.encode(notStarted, forKey: .notStarted)
     }
@@ -166,7 +202,14 @@ public struct WorkspaceStore {
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
             var workspace: Workspace
-            do { workspace = try decoder.decode(Workspace.self, from: data) }
+            do {
+                workspace = try decoder.decode(Workspace.self, from: data)
+                // The decoder is tolerant, so an old file can decode cleanly; still give the migration hook its turn.
+                if migration != nil, workspace.version < Self.currentSchemaVersion {
+                    workspace = try decodeMigrated(data, originalError: WorkspaceStoreError.migrationFailed("old version"))
+                }
+            }
+            catch let error as WorkspaceStoreError { throw error }
             catch {
                 workspace = try decodeMigrated(data, originalError: error)
             }
@@ -175,6 +218,7 @@ public struct WorkspaceStore {
                 if node.kind == .console { node.notStarted = true }
                 return node
             }
+            workspace.wires = WireRules.pruned(workspace.wires, nodeIDs: Set(workspace.nodes.map(\.id)))
             return workspace
         } catch let error as WorkspaceStoreError {
             if case .unsupportedVersion = error { throw error }

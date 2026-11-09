@@ -71,62 +71,122 @@ public final class DocsPanelModel {
 public struct DocsPanel: View {
     @Bindable private var model: DocsPanelModel
 
+    /// Shown when no document can be listed. Pinned by `VerktoyPanelsTests`.
+    public static let emptyStateTitle = "Ingen dokumenter"
+
     public init(model: DocsPanelModel) { self.model = model }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.sm) {
+        VStack(alignment: .leading, spacing: DS.Space.lg) {
             if model.projectRoots.count > 1 {
-                Picker("Project folder", selection: Binding(
-                    get: { model.selectedRoot }, set: { root in if let root { model.selectRoot(root) } }
-                )) {
-                    ForEach(model.projectRoots, id: \.path) { root in Text(root.lastPathComponent).tag(Optional(root)) }
-                }
-                .pickerStyle(.menu)
-            }
-            if let error = model.errorMessage {
-                Text(error).font(Typography.caption).foregroundStyle(Palette.status(.error)).textSelection(.enabled)
-            } else if model.projectRoots.isEmpty {
-                Text("Add a project folder to this workspace to browse its documents.")
-                    .font(Typography.body).foregroundStyle(Palette.secondaryInk)
-            } else {
-                HStack(spacing: 0) {
-                    List(selection: Binding(
-                        get: { model.selectedDocument?.id }, set: { id in
-                            if let document = model.documents.first(where: { $0.id == id }) { model.select(document) }
-                        }
+                PanelSection("Prosjektmappe") {
+                    Picker("Project folder", selection: Binding(
+                        get: { model.selectedRoot }, set: { root in if let root { model.selectRoot(root) } }
                     )) {
-                        ForEach(model.documents) { document in
-                            Text(document.relativePath).font(Typography.caption).tag(Optional(document.id))
+                        ForEach(model.projectRoots, id: \.path) { root in
+                            Text(root.lastPathComponent).tag(Optional(root))
                         }
                     }
-                    .listStyle(.sidebar)
-                    .frame(minWidth: 160, idealWidth: 190)
-                    Rectangle().fill(Palette.border).frame(width: 1)
-                    Group {
-                        if let document = model.selectedDocument {
-                            VStack(alignment: .leading, spacing: 0) {
-                                Text(document.relativePath).font(Typography.caption).foregroundStyle(Palette.secondaryInk).padding(Spacing.sm)
-                                if let error = model.selectionError {
-                                    ContentUnavailableView("Unable to read document", systemImage: "exclamationmark.triangle", description: Text(error))
-                                } else {
-                                    ScrollView {
-                                        Text(model.text).font(Typography.body.monospaced()).textSelection(.enabled)
-                                            .frame(maxWidth: .infinity, alignment: .leading).padding(Spacing.sm)
-                                    }
-                                }
-                            }
-                        } else {
-                            ContentUnavailableView("Select a document", systemImage: "doc.text", description: Text("Markdown and plain text files in the project folder appear here."))
-                        }
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .accessibilityIdentifier("docs.projectRoot")
                 }
-                .overlay { RoundedRectangle(cornerRadius: Spacing.radiusSmall).stroke(Palette.border, lineWidth: 1) }
-                .clipShape(RoundedRectangle(cornerRadius: Spacing.radiusSmall))
             }
-            Text("Read-only · Local files · 1 MB limit").font(Typography.caption).foregroundStyle(Palette.mutedInk)
+
+            if let error = model.errorMessage {
+                PanelSection("Feil") { errorText(error) }
+            } else if model.projectRoots.isEmpty {
+                EmptyStateView(
+                    symbol: "folder",
+                    title: Self.emptyStateTitle,
+                    message: "Legg til en prosjektmappe i arbeidsområdet for å bla gjennom dokumentene.",
+                    identifier: "docs.empty")
+            } else if model.documents.isEmpty {
+                EmptyStateView(
+                    symbol: "doc.text.magnifyingglass",
+                    title: Self.emptyStateTitle,
+                    message: "Fant ingen dokumenter i prosjektmappen.",
+                    identifier: "docs.empty")
+            } else {
+                PanelSection("Dokumenter", fillsHeight: true) { browser }
+                    .frame(maxHeight: .infinity)
+            }
+
+            Text("Kun lesing · Lokale filer · Maks 1 MB")
+                .font(DS.Font.caption)
+                .foregroundStyle(DS.Color.mutedInk)
         }
-        .padding(Spacing.sm)
-        .background(Palette.surface)
+        .padding(DS.Space.lg)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var browser: some View {
+        HStack(spacing: 0) {
+            List(selection: Binding(
+                get: { model.selectedDocument?.id }, set: { id in
+                    if let document = model.documents.first(where: { $0.id == id }) { model.select(document) }
+                }
+            )) {
+                ForEach(model.documents) { document in
+                    let isSelected = model.selectedDocument?.id == document.id
+                    PanelRow(isSelected: isSelected) {
+                        Text(document.relativePath)
+                            .font(DS.Font.caption)
+                            .foregroundStyle(isSelected ? DS.Color.accentInk : DS.Color.ink)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    .tag(Optional(document.id))
+                }
+            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .frame(minWidth: 160, idealWidth: 190)
+            .accessibilityIdentifier("docs.fileList")
+
+            Rectangle().fill(DS.Color.hairline).frame(width: 1)
+
+            Group {
+                if let document = model.selectedDocument {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(document.relativePath)
+                            .font(DS.Font.caption)
+                            .foregroundStyle(DS.Color.secondaryInk)
+                            .padding(DS.Space.sm)
+                        if let error = model.selectionError {
+                            EmptyStateView(
+                                symbol: "exclamationmark.triangle",
+                                title: "Unable to read document",
+                                message: error,
+                                identifier: "docs.selectionError")
+                        } else {
+                            ScrollView {
+                                Text(model.text)
+                                    .font(DS.Font.mono)
+                                    .foregroundStyle(DS.Color.ink)
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(DS.Space.sm)
+                            }
+                            .accessibilityIdentifier("docs.text")
+                        }
+                    }
+                } else {
+                    EmptyStateView(
+                        symbol: "doc.text",
+                        title: "Select a document",
+                        message: "Markdown and plain text files in the project folder appear here.",
+                        identifier: "docs.noSelection")
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private func errorText(_ error: String) -> some View {
+        Text(error)
+            .font(DS.Font.caption)
+            .foregroundStyle(DS.Color.status(.error))
+            .textSelection(.enabled)
     }
 }

@@ -1,6 +1,8 @@
 import AppKit
 import Darwin
+import LanebayCore
 import LanebayUI
+import SwiftTerm
 
 /// Drives Add console → Shell inside the running app, types a command, and records a missing-CLI error.
 @MainActor
@@ -423,21 +425,38 @@ enum ConsoleFlowSelfTest {
       if let previousFileURL { pasteboard.setString(previousFileURL, forType: .fileURL) }
       if let previousString { pasteboard.setString(previousString, forType: .string) }
     }
-    let token = "lanebay-paste-9f3"
-    pasteboard.clearContents()
-    pasteboard.setString("/bin/echo \(token)", forType: .string)
+    let pasteMarker = "lanebay-paste-9f3"
     window.makeKeyAndOrderFront(nil)
     window.makeFirstResponder(terminal)
-    if let event = keyEvent("v", type: .keyDown, keyCode: 9, modifiers: .command, window: window) {
-      NSApp.sendEvent(event)
-      notes.append("pasteKey=sendEvent")
-    } else {
-      notes.append("pasteKey=no-event")
+    var saw = false
+    for attempt in 1...2 {
+      pasteboard.clearContents()
+      pasteboard.setString("/bin/echo \(pasteMarker)", forType: .string)
+      try? await Task.sleep(for: .milliseconds(80))
+      // Distinguishes the three first-paste failure modes: wrong responder, kitty flags
+      // claimed by the program, or the pasteboard no longer holding what we wrote.
+      let responder = window.firstResponder.map { String(describing: type(of: $0)) } ?? "nil"
+      let flags = (terminal as? SwiftTerm.TerminalView)?.keyboardEnhancementFlags.rawValue ?? 0
+      let readback = pasteboard.string(forType: .string) ?? ""
+      notes.append(
+        "paste.state\(attempt)=responder:\(sanitizedTail(responder)) flags:\(flags) cc:\(pasteboard.changeCount) readback:\(readback.contains(pasteMarker) ? "token" : sanitizedTail(readback))"
+      )
+      if let event = keyEvent("v", type: .keyDown, keyCode: 9, modifiers: .command, window: window) {
+        NSApp.sendEvent(event)
+        if attempt == 1 { notes.append("pasteKey=sendEvent") }
+      } else if attempt == 1 {
+        notes.append("pasteKey=no-event")
+      }
+      if let enter = keyEvent("\r", type: .keyDown, keyCode: 36, window: window) {
+        terminal.keyDown(with: enter)
+      }
+      saw = await waitForToken(pasteMarker, board: board, consoleID: consoleID, timeout: .seconds(4))
+      if saw { break }
+      notes.append("pasteAttempt\(attempt)=missed")
+      if let tail = board.recentConsoleOutput(consoleID) {
+        notes.append("paste.tail\(attempt)=\(sanitizedTail(tail))")
+      }
     }
-    if let enter = keyEvent("\r", type: .keyDown, keyCode: 36, window: window) {
-      terminal.keyDown(with: enter)
-    }
-    let saw = await waitForToken(token, board: board, consoleID: consoleID, timeout: .seconds(4))
     notes.append("paste=\(saw)")
     return notes
   }
@@ -451,7 +470,12 @@ enum ConsoleFlowSelfTest {
   ) async -> Bool {
     let deadline = ContinuousClock.now + timeout
     while ContinuousClock.now < deadline {
-      if board.recentConsoleOutput(consoleID)?.contains(token) == true { return true }
+      // The line editor can echo pasted input with a per-character color code, so the
+      // raw stream may hold "p ESC[39m a ESC[39m s…". Matching on control-stripped
+      // output keeps the check about whether the text reached the process.
+      if let output = board.recentConsoleOutput(consoleID),
+        StatusHeuristics.readable(output).contains(token)
+      { return true }
       try? await Task.sleep(for: .milliseconds(40))
     }
     return false
@@ -1085,8 +1109,21 @@ enum ConsoleFlowSelfTest {
     let pressedAdd = await AccessibilityProbe.press(
       pid: getpid(), names: ["rail.addConsole"], actions: [kAXPressAction as String])
     notes.append("pressAdd=\(pressedAdd)")
+    if let state = AccessibilityProbe.lastDiagnosticsLine() {
+      notes.append(state)
+    }
     try? await Task.sleep(for: .milliseconds(250))
     var pressed = false
+    // The first addConsole press can be swallowed while the board is still
+    // reflowing after a console close: the rail button matches and AXPress
+    // reports the chronic -25205, yet the picker never opens (two consecutive
+    // flow runs of 2026-10-30, agent/screens/20261030-112507 and -112738).
+    // Re-open it, bounded, like the paste probe's settle+retry. Safe against
+    // toggling an open picker: the row press below only fails when the picker
+    // is closed, and a wrongly-timed re-press just re-closes it for the next
+    // interval to fix within the same deadline.
+    var addRetries = 0
+    var nextAddRetry = ContinuousClock.now
     let names = [AgentPickerCatalog.accessibilityIdentifier(agentID: agent), title]
     let deadline = ContinuousClock.now + .seconds(3)
     while ContinuousClock.now < deadline {
@@ -1096,12 +1133,21 @@ enum ConsoleFlowSelfTest {
       }
       if await AccessibilityProbe.press(pid: getpid(), names: names, actions: [kAXPressAction as String]) {
         pressed = true
+      } else if ContinuousClock.now >= nextAddRetry {
+        addRetries += 1
+        _ = await AccessibilityProbe.press(
+          pid: getpid(), names: ["rail.addConsole"], actions: [kAXPressAction as String])
+        nextAddRetry = ContinuousClock.now + .milliseconds(400)
       }
       try? await Task.sleep(for: .milliseconds(80))
     }
+    if addRetries > 0 { notes.append("pressAddRetries=\(addRetries)") }
     let created = (board.workspace?.nodes.filter { $0.agentID == agent }.count ?? 0) > before
     notes.append("press.\(agent)=\(pressed && created)")
     if !pressed || !created {
+      if let state = AccessibilityProbe.lastDiagnosticsLine() {
+        notes.append(state)
+      }
       let visible = await AccessibilityProbe.names(pid: getpid())
       let menu = visible.filter { $0.contains(title) || $0.hasPrefix("agent.") }
       notes.append("menuNames=\(menu.prefix(16).joined(separator: "|"))")
@@ -1141,11 +1187,22 @@ enum ConsoleFlowSelfTest {
       notes.append("panel.\(panel.rawValue).scroll=\(before)->\(after)")
       button.performClick(nil)
       let shown = await waitMarker(panel.hostIdentifier)
+      // SwiftUI can tear the old panel host down a beat after inserting the new one.
+      // Judge the settled tree, not the swap frame; note any transient overlap.
+      let immediate = Set(markerIdentifiers(prefix: "panel.host.", in: content))
+      let settled = await waitUntil(.milliseconds(800)) {
+        Set(markerIdentifiers(prefix: "panel.host.", in: content)) == [panel.hostIdentifier]
+      }
       let hosts = Set(markerIdentifiers(prefix: "panel.host.", in: content))
-      if !shown || hosts != [panel.hostIdentifier] { exclusive = false }
-      notes.append("panel.\(panel.rawValue)=\(shown)")
+      if settled, immediate != [panel.hostIdentifier] {
+        notes.append(
+          "panel.\(panel.rawValue).transient=\(immediate.sorted().joined(separator: "|"))"
+        )
+      }
+      if !shown || !settled || hosts != [panel.hostIdentifier] { exclusive = false }
+      notes.append("panel.\(panel.rawValue)=\(shown && settled)")
       notes.append("panel.\(panel.rawValue).hosts=\(hosts.sorted().joined(separator: "|"))")
-      if shown { opened.append(panel.rawValue) }
+      if shown && settled { opened.append(panel.rawValue) }
       if panel == .settings {
         let toggle = await waitMarker("settings.askBeforeSending")
         notes.append("settingsToggle=\(toggle)")

@@ -16,12 +16,14 @@ struct OrchestratorConsoleBody: View {
   let nodeID: UUID
 
   var body: some View {
-    VStack(alignment: .leading, spacing: Spacing.xs) {
+    VStack(alignment: .leading, spacing: DS.Space.xs) {
+      OrchestratorLeadHeader(model: model, nodeID: nodeID)
+      OrchestratorMemberList(model: model, leadNodeID: nodeID)
       ScrollViewReader { proxy in
         ScrollView {
           Text(verbatim: model.orchestratorTranscripts[nodeID] ?? "")
-            .font(Typography.terminal)
-            .foregroundStyle(Palette.ink)
+            .font(DS.Font.mono)
+            .foregroundStyle(DS.Color.ink)
             .frame(maxWidth: .infinity, alignment: .leading)
             .textSelection(.enabled)
             .accessibilityIdentifier(OrchestratorControl.transcript(nodeID))
@@ -31,7 +33,7 @@ struct OrchestratorConsoleBody: View {
           proxy.scrollTo("transcript", anchor: .bottom)
         }
       }
-      HStack(spacing: Spacing.xs) {
+      HStack(spacing: DS.Space.xs) {
         TextField(
           "Command",
           text: Binding(
@@ -40,7 +42,7 @@ struct OrchestratorConsoleBody: View {
           )
         )
         .textFieldStyle(.plain)
-        .font(Typography.terminal)
+        .font(DS.Font.mono)
         .accessibilityIdentifier(OrchestratorControl.command(nodeID))
         .onSubmit { model.submitOrchestratorDraft(nodeID) }
         AXActionButton(
@@ -57,9 +59,9 @@ struct OrchestratorConsoleBody: View {
         .frame(width: 64, height: 28)
       }
     }
-    .padding(Spacing.sm)
+    .padding(DS.Space.sm)
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    .background(Palette.raisedSurface)
+    .background(DS.Color.raisedSurface)
   }
 }
 
@@ -70,21 +72,21 @@ struct OrchestratorApprovalBanner: View {
   let onDeny: () -> Void
 
   var body: some View {
-    VStack(alignment: .leading, spacing: Spacing.xs) {
+    VStack(alignment: .leading, spacing: DS.Space.xs) {
       Text("Ask before sending")
-        .font(Typography.caption.weight(.semibold))
-        .foregroundStyle(Palette.secondaryInk)
+        .font(DS.Font.caption.weight(.semibold))
+        .foregroundStyle(DS.Color.secondaryInk)
       Text("Send to \(approval.targetTitle)?")
-        .font(Typography.title)
-        .foregroundStyle(Palette.ink)
+        .font(DS.Font.title)
+        .foregroundStyle(DS.Color.ink)
       Text(verbatim: approval.text)
-        .font(Typography.terminal)
-        .foregroundStyle(Palette.ink)
+        .font(DS.Font.mono)
+        .foregroundStyle(DS.Color.ink)
         .textSelection(.enabled)
         .lineLimit(6)
         .accessibilityIdentifier(OrchestratorControl.approval)
         .accessibilityLabel("Send to \(approval.targetTitle): \(approval.text)")
-      HStack(spacing: Spacing.sm) {
+      HStack(spacing: DS.Space.sm) {
         AXActionButton(
           title: "Approve",
           systemImage: nil,
@@ -107,16 +109,16 @@ struct OrchestratorApprovalBanner: View {
         .frame(width: 110, height: 28)
         if waitingCount > 1 {
           Text("\(waitingCount) waiting")
-            .font(Typography.caption)
-            .foregroundStyle(Palette.secondaryInk)
+            .font(DS.Font.caption)
+            .foregroundStyle(DS.Color.secondaryInk)
         }
       }
     }
-    .padding(Spacing.sm)
+    .padding(DS.Space.sm)
     .frame(maxWidth: 520, alignment: .leading)
-    .background(Palette.surface, in: RoundedRectangle(cornerRadius: Spacing.radiusMedium))
-    .overlay(RoundedRectangle(cornerRadius: Spacing.radiusMedium).stroke(Palette.accent, lineWidth: 1.5))
-    .shadow(color: Spacing.elevationRaised.color, radius: Spacing.elevationRaised.radius, y: Spacing.elevationRaised.y)
+    .background(DS.Color.surface, in: RoundedRectangle(cornerRadius: DS.Radius.control))
+    .overlay(RoundedRectangle(cornerRadius: DS.Radius.control).stroke(DS.Color.accent, lineWidth: 1.5))
+    .shadow(color: DS.Elevation.raised.color, radius: DS.Elevation.raised.radius, y: DS.Elevation.raised.y)
   }
 }
 
@@ -140,7 +142,7 @@ struct OrchestratorLinkOverlay: View {
           path.move(to: CGPoint(x: segment.startX, y: segment.startY))
           path.addLine(to: CGPoint(x: segment.endX, y: segment.endY))
           let color = link.status == .failed || link.status == .denied
-            ? Palette.status(.error) : Palette.accent
+            ? DS.Color.status(.error) : DS.Color.accent
           context.stroke(path, with: .color(color.opacity(0.9)), style: StrokeStyle(lineWidth: 2, lineCap: .round))
         }
       }
@@ -150,12 +152,12 @@ struct OrchestratorLinkOverlay: View {
             from: source, to: target, zoom: zoom, panX: panX, panY: panY)
         {
           Text("\(link.targetTitle) · \(link.status.label)")
-            .font(Typography.caption.weight(.semibold))
-            .foregroundStyle(Palette.ink)
-            .padding(.horizontal, Spacing.xs)
+            .font(DS.Font.caption.weight(.semibold))
+            .foregroundStyle(DS.Color.ink)
+            .padding(.horizontal, DS.Space.xs)
             .padding(.vertical, 2)
-            .background(Palette.surface, in: Capsule())
-            .overlay(Capsule().stroke(Palette.accent, lineWidth: 1))
+            .background(DS.Color.surface, in: Capsule())
+            .overlay(Capsule().stroke(DS.Color.accent, lineWidth: 1))
             .fixedSize()
             .position(x: segment.badgeX, y: segment.badgeY)
             .accessibilityIdentifier(OrchestratorControl.link(link.id))
@@ -166,5 +168,115 @@ struct OrchestratorLinkOverlay: View {
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     .allowsHitTesting(false)
     .accessibilityElement(children: .contain)
+  }
+}
+
+/// The lead console's own header: provider badge, title, a live pulse while it runs and a status pill.
+struct OrchestratorLeadHeader: View {
+  @Bindable var model: BoardViewModel
+  let nodeID: UUID
+
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @State private var isPulsing = false
+
+  private var status: AgentStatus { model.orchestratorStatuses[nodeID] ?? .stopped }
+  private var title: String { model.workspace?.nodes.first { $0.id == nodeID }?.title ?? OrchestratorKind.title }
+  private var isLead: Bool { model.workspace?.groups.contains { $0.leadNodeID == nodeID } == true }
+
+  var body: some View {
+    HStack(spacing: DS.Space.xs) {
+      ProviderBadge(agentID: OrchestratorKind.agentID, size: DS.Space.md + DS.Space.xxs)
+      VStack(alignment: .leading, spacing: DS.Space.xxs) {
+        Text(isLead ? "★ \(title) · Lead" : title)
+          .font(DS.Font.bodyEmphasis)
+          .foregroundStyle(DS.Color.ink)
+          .lineLimit(1)
+        if status == .running {
+          HStack(spacing: DS.Space.xxs) {
+            Circle()
+              .fill(DS.Color.status(.running))
+              .frame(width: DS.Space.xs, height: DS.Space.xs)
+              .scaleEffect(isPulsing ? 1.4 : 1)
+              .opacity(isPulsing ? 0.5 : 1)
+              .animation(DS.Motion.animation(DS.Motion.pulse, reduceMotion: reduceMotion), value: isPulsing)
+            Text("Live").font(DS.Font.caption).foregroundStyle(DS.Color.secondaryInk)
+          }
+        }
+      }
+      Spacer(minLength: DS.Space.xs)
+      StatusPill(kind: status.statusKind, label: status.label())
+    }
+    .padding(.horizontal, DS.Space.xs)
+    .onAppear { isPulsing = status == .running && !reduceMotion }
+    .onChange(of: status) { _, _ in isPulsing = status == .running && !reduceMotion }
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("\(title), \(status.label())")
+  }
+}
+
+/// The consoles the lead steers, as rows with provider badge, status and last activity line.
+struct OrchestratorMemberList: View {
+  @Bindable var model: BoardViewModel
+  let leadNodeID: UUID
+
+  private var members: [Node] {
+    (model.workspace?.nodes ?? []).filter { $0.kind == .console && $0.id != leadNodeID }
+  }
+
+  var body: some View {
+    if members.isEmpty {
+      Text("Ingen medlemmer ennå")
+        .font(DS.Font.caption)
+        .foregroundStyle(DS.Color.mutedInk)
+        .padding(.horizontal, DS.Space.xs)
+    } else {
+      VStack(alignment: .leading, spacing: 0) {
+        ForEach(members.prefix(6)) { node in
+          row(node)
+        }
+        if members.count > 6 {
+          Text("+\(members.count - 6) flere")
+            .font(DS.Font.caption)
+            .foregroundStyle(DS.Color.mutedInk)
+            .padding(.horizontal, DS.Space.xs)
+            .padding(.vertical, DS.Space.xxs)
+        }
+      }
+      .accessibilityElement(children: .contain)
+      .accessibilityIdentifier("orchestrator.members")
+    }
+  }
+
+  private func row(_ node: Node) -> some View {
+    let status = status(for: node)
+    return HStack(spacing: DS.Space.xs) {
+      ProviderBadge(agentID: node.agentID ?? "shell", size: DS.Space.md)
+      Text(node.title)
+        .font(DS.Font.caption)
+        .foregroundStyle(DS.Color.ink)
+        .lineLimit(1)
+      Spacer(minLength: DS.Space.xs)
+      Text(activityLine(for: node) ?? "Ingen aktivitet")
+        .font(DS.Font.caption)
+        .foregroundStyle(DS.Color.secondaryInk)
+        .lineLimit(1)
+        .truncationMode(.tail)
+      StatusPill(kind: status.statusKind, label: status.label())
+    }
+    .padding(.horizontal, DS.Space.xs)
+    .padding(.vertical, DS.Space.xxs)
+    .accessibilityElement(children: .combine)
+  }
+
+  private func status(for node: Node) -> AgentStatus {
+    if let session = model.sessions[node.id] { return session.status }
+    if let status = model.orchestratorStatuses[node.id] { return status }
+    return model.consoleLaunchErrors[node.id] != nil ? .error : .stopped
+  }
+
+  private func activityLine(for node: Node) -> String? {
+    let _ = model.sessions[node.id]?.outputByteCount
+    guard let output = model.recentConsoleOutput(node.id, maxBytes: 4_096) else { return nil }
+    return ConsoleActivityLine.latest(in: output)
   }
 }

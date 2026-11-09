@@ -432,7 +432,8 @@ final class LanebayUITests: XCTestCase {
         XCTAssertGreaterThan(Spacing.xl, Spacing.md)
         XCTAssertEqual(Spacing.radiusSmall, 6)
         XCTAssertEqual(Spacing.radiusMedium, 10)
-        XCTAssertEqual(Spacing.radiusLarge, 14)
+        XCTAssertEqual(Spacing.radiusLarge, 18)
+        XCTAssertGreaterThan(Spacing.radiusXL, Spacing.radiusLarge)
         XCTAssertFalse(Icon.allCases.isEmpty)
     }
 
@@ -695,8 +696,8 @@ final class LanebayUITests: XCTestCase {
             ("secondary ink / raised surface", Palette.secondaryInk, Palette.raisedSurface),
             ("muted ink / surface", Palette.mutedInk, Palette.surface),
             ("muted ink / raised surface", Palette.mutedInk, Palette.raisedSurface),
-            ("accent / accent soft", Palette.accent, Palette.accentSoft),
-            ("command destination / accent soft", Palette.accent, Palette.accentSoft),
+            ("accent ink / accent soft", Palette.accentInk, Palette.accentSoft),
+            ("command destination / accent soft", Palette.accentInk, Palette.accentSoft),
             ("command text / command surface", Palette.ink, Palette.surface),
             ("card title / raised surface", Palette.ink, Palette.raisedSurface),
             ("card menu / raised surface", Palette.secondaryInk, Palette.raisedSurface),

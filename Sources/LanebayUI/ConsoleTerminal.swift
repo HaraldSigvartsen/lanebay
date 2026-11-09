@@ -102,6 +102,8 @@ public final class ConsoleSession: NSObject, TerminalViewDelegate {
   /// Command text submitted with Enter. While the current row still shows it, the shell is running that command.
   @ObservationIgnored private var blockingCommand: String?
   @ObservationIgnored private var outputText = ""
+  /// Paste and focus modes the program turned on, so agent input looks like real typing.
+  @ObservationIgnored private var inputModes = TerminalInputModes()
   /// Total bytes seen. The retained tail is capped, so this is the signal that new output arrived.
   @ObservationIgnored private(set) var outputByteCount = 0
   var recentOutput: Data { Data(outputText.utf8) }
@@ -372,6 +374,8 @@ public final class ConsoleSession: NSObject, TerminalViewDelegate {
 
   private func absorb(_ data: Data) {
     guard !data.isEmpty else { return }
+    // Read modes here: the publish path skips to the newest screen after a burst and would miss a startup switch.
+    inputModes.scan(String(decoding: data, as: UTF8.self))
     appendCapped(data, to: &publishBacklog, limit: terminalFeedBacklogLimit)
     if terminal == nil {
       appendCapped(data, to: &pendingOutput, limit: terminalFeedBacklogLimit)
@@ -424,6 +428,15 @@ public final class ConsoleSession: NSObject, TerminalViewDelegate {
 
   func setRunningForTesting(_ running: Bool) { isRunning = running }
 
+  /// The text the card shows right now (one string per screen row). Full-screen AI tools redraw by
+  /// cursor moves, so their raw output stream is unreadable but the screen is not.
+  public func screenText() -> String? {
+    guard let view = terminal else { return nil }
+    let rows = view.terminalDimensions.rows
+    guard rows > 0 else { return nil }
+    return view.visibleRowsText(0..<rows).joined(separator: "\n")
+  }
+
   func terminalView() -> FocusTerminalView {
     TerminalPasteShortcuts.install()
     if let terminal { return terminal }
@@ -473,6 +486,27 @@ public final class ConsoleSession: NSObject, TerminalViewDelegate {
     }
   }
 
+  /// Text from the control API. Pasted when the program asked for bracketed paste; "\r" submits.
+  public func sendAgentInput(_ text: String) {
+    agentHoldsFocus = true
+    send(inputModes.encode(text))
+  }
+
+  /// Set once the control API typed here. FreeBuff ignores Enter while it believes it is unfocused,
+  /// and the card re-reports focus-out on redraws, so an agent console stays focused to the program.
+  @ObservationIgnored private var agentHoldsFocus = false
+  @ObservationIgnored private var lastFocusReport: Data?
+
+  /// Drops repeated focus reports, and focus-out once an agent drives this console.
+  func shouldForwardTerminalInput(_ bytes: Data) -> Bool {
+    let focusIn = Data([0x1B, 0x5B, 0x49]), focusOut = Data([0x1B, 0x5B, 0x4F])
+    guard bytes == focusIn || bytes == focusOut else { return true }
+    if bytes == focusOut, agentHoldsFocus { return false }
+    if bytes == lastFocusReport { return false }
+    lastFocusReport = bytes
+    return true
+  }
+
   func close() async {
     closed = true
     idleTask?.cancel()
@@ -484,7 +518,11 @@ public final class ConsoleSession: NSObject, TerminalViewDelegate {
     await supervisor.discardScrollback(for: id)
   }
 
-  public func send(source: SwiftTerm.TerminalView, data: ArraySlice<UInt8>) { send(Data(data)) }
+  public func send(source: SwiftTerm.TerminalView, data: ArraySlice<UInt8>) {
+    let bytes = Data(data)
+    guard shouldForwardTerminalInput(bytes) else { return }
+    send(bytes)
+  }
   public func sizeChanged(source: SwiftTerm.TerminalView, newCols: Int, newRows: Int) {
     // A card drag is not a window live-resize, so SwiftTerm reports every step.
     // The first size is applied immediately; later steps collapse to the latest grid.

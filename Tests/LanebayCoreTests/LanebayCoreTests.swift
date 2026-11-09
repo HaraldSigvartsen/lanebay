@@ -207,6 +207,65 @@ final class LanebayCoreTests: XCTestCase {
         XCTAssertEqual(heuristic.infer(from: "compiling", now: start.advanced(by: .seconds(10))), .running)
     }
 
+    func testAXProbeDiagnosticsChronicRailQuirkStaysScalarOnly() {
+        let chronic = AXProbeDiagnostics.Sample(
+            target: "rail.addConsole", childrenError: 0, windowsError: 0, windowCount: 1,
+            walked: 214, matched: true, actionStatuses: [-25205],
+            trace: (0..<12).map { "0:AXGroup:g\($0)" }, mainThread: true)
+        XCTAssertFalse(chronic.traceWarranted)
+        XCTAssertFalse(chronic.reportLine.contains("trace="))
+        XCTAssertEqual(
+            chronic.reportLine,
+            "ax.state(rail.addConsole) childrenErr=0 windowsErr=0 windows=1 seen=214 match=1 actions=-25205 main=1")
+    }
+
+    func testAXProbeDiagnosticsReportLineCarriesScalarsAndCapsTheFailureTrace() {
+        let healthy = AXProbeDiagnostics.Sample(
+            target: "rail.addConsole", childrenError: 0, windowsError: 0, windowCount: 1,
+            walked: 214, matched: true, actionStatuses: [0], trace: ["0:AXWindow:board"],
+            mainThread: true)
+        XCTAssertEqual(
+            healthy.reportLine,
+            "ax.state(rail.addConsole) childrenErr=0 windowsErr=0 windows=1 seen=214 match=1 actions=0 main=1")
+
+        let outage = AXProbeDiagnostics.Sample(
+            target: "rail.addConsole", childrenError: -25212, windowsError: -25204, windowCount: -1,
+            walked: 0, matched: false, actionStatuses: [],
+            trace: (0..<20).map { "0:AXGroup:g\($0)" }, mainThread: true)
+        XCTAssertTrue(outage.reportLine.hasPrefix(
+            "ax.state(rail.addConsole) childrenErr=-25212 windowsErr=-25204 windows=-1 seen=0 match=0 actions= main=1 trace="))
+        let tracePart = outage.reportLine.split(separator: "trace=").last ?? ""
+        let traceItems = tracePart.split(separator: "|")
+        XCTAssertEqual(traceItems.count, 12)
+        XCTAssertEqual(traceItems.first, "0:AXGroup:g0")
+        XCTAssertEqual(traceItems.last, "0:AXGroup:g11")
+
+        let matchedButActionFailed = AXProbeDiagnostics.Sample(
+            target: "Create", childrenError: 0, windowsError: 0, windowCount: 1,
+            walked: 30, matched: true, actionStatuses: [-25206], trace: ["0:AXButton:Create"],
+            mainThread: true)
+        XCTAssertTrue(matchedButActionFailed.reportLine.contains("actions=-25206 main=1 trace=0:AXButton:Create"))
+        XCTAssertFalse(matchedButActionFailed.pressed)
+        XCTAssertTrue(healthy.pressed)
+    }
+
+    func testAXProbeDiagnosticsFlagsAnOffMainThreadWalkWithTheTrace() {
+        // The 2026-10-28 crash class: a same-process AX walk that ran on a
+        // cooperative thread raced SwiftUI's main-thread accessibility-node
+        // teardown (SIGSEGV, pointer-authentication failure inside
+        // AccessibilityNode.accessibilityIdentifier — flow run
+        // agent/screens/20261028-004557, crash report
+        // Lanebay-2026-10-28-004609.ips). main=0 is that regression
+        // signature and must carry the element trace even when the walk
+        // matched and the press itself succeeded.
+        let offMain = AXProbeDiagnostics.Sample(
+            target: "rail.addConsole", childrenError: 0, windowsError: 0, windowCount: 1,
+            walked: 214, matched: true, actionStatuses: [0], trace: ["0:AXWindow:board"],
+            mainThread: false)
+        XCTAssertTrue(offMain.traceWarranted)
+        XCTAssertTrue(offMain.reportLine.contains("main=0 trace=0:AXWindow:board"))
+    }
+
     func testStatusHeuristicsIgnoreStaleHistoryAndNormalizeANSIAcrossChunks() {
         let start = ContinuousClock.now
         var heuristic = StatusHeuristics(rules: .init(quietPeriod: .seconds(2)))
@@ -220,6 +279,19 @@ final class LanebayCoreTests: XCTestCase {
         heuristic.receivedOutput(at: start.advanced(by: .seconds(5)))
         XCTAssertEqual(heuristic.infer(from: "$ ", now: start.advanced(by: .seconds(6))), .running)
         XCTAssertEqual(heuristic.infer(from: "$ ", now: start.advanced(by: .seconds(7))), .idle)
+    }
+
+    func testReadableRejoinsTokensEchoedWithPerCharacterColorCodes() {
+        // A zsh line-editor repaint can echo pasted input with a color code after
+        // every character, so the raw stream holds "s ESC[39m t ESC[39m e…". Tokens
+        // must still be findable once the controls are stripped (ConsoleFlowSelfTest
+        // paste probe, observed live 2026-10-26).
+        let interleaved = "/bin/echo lanebay-pa"
+            + "s\u{001B}[39mt\u{001B}[39me\u{001B}[39m-\u{001B}[39m9\u{001B}[39mf\u{001B}[39m3"
+            + "\u{001B}[K"
+        let readable = StatusHeuristics.readable(interleaved)
+        XCTAssertTrue(readable.contains("/bin/echo lanebay-paste-9f3"))
+        XCTAssertFalse(readable.contains("\u{001B}"))
     }
 
     func testStatusHeuristicsRecognizeLongShellPromptsAndInputRequests() {
@@ -818,6 +890,53 @@ extension LanebayCoreTests {
     XCTAssertGreaterThan(workspace.idleSeconds, 0)
   }
 
+  @MainActor
+  func testUsageTrackerTerminatesAcrossTheAutumnDSTFallBackHour() throws {
+    // 25 Oct 2026 is Europe/Oslo's 25-hour fall-back day. A status cursor at 22:30 local with a
+    // change at 23:30 local crosses the wall-clock minute where the old fixed 86_400-second day
+    // boundary landed at or before the cursor and spun the accumulator forever on the main actor.
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    var oslo = Calendar(identifier: .gregorian)
+    oslo.timeZone = try XCTUnwrap(TimeZone(identifier: "Europe/Oslo"))
+    let tracker = UsageStatsTracker(store: UsageStatsStore(rootURL: root), calendar: oslo)
+    let workspaceID = UUID()
+    let session = UUID(uuidString: "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB")!
+    let start = try XCTUnwrap(oslo.date(from: DateComponents(year: 2026, month: 10, day: 25, hour: 22, minute: 30)))
+    let change = try XCTUnwrap(oslo.date(from: DateComponents(year: 2026, month: 10, day: 25, hour: 23, minute: 30)))
+    XCTAssertEqual(change.timeIntervalSince(start), 3_600)
+    tracker.sessionStarted(id: session, workspaceID: workspaceID, workspaceName: "Test", agent: "shell", status: "running", at: start)
+    tracker.sessionStatusChanged(id: session, status: "idle", at: change)
+    tracker.sessionEnded(id: session, at: change.addingTimeInterval(60))
+    let day = try XCTUnwrap(tracker.loadDocument().days.first { $0.day == "2026-10-25" })
+    let workspace = try XCTUnwrap(day.workspaces.first)
+    XCTAssertEqual(workspace.runningSeconds, 3_600, accuracy: 0.001)
+    XCTAssertEqual(workspace.idleSeconds, 60, accuracy: 0.001)
+    XCTAssertEqual(try XCTUnwrap(workspace.sessions.first).durationSeconds, 3_660, accuracy: 0.001)
+  }
+
+  @MainActor
+  func testUsageTrackerSplitsStatusTimeAtLocalMidnightsAroundDST() throws {
+    // With a local calendar, segments must still split at each local midnight and book whole days,
+    // including the 25-hour day itself (24 Oct 20:30Z start through two midnights to 26 Oct 06:30Z).
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    var oslo = Calendar(identifier: .gregorian)
+    oslo.timeZone = try XCTUnwrap(TimeZone(identifier: "Europe/Oslo"))
+    let tracker = UsageStatsTracker(store: UsageStatsStore(rootURL: root), calendar: oslo)
+    let workspaceID = UUID()
+    let session = UUID(uuidString: "CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC")!
+    let start = try XCTUnwrap(oslo.date(from: DateComponents(year: 2026, month: 10, day: 25, hour: 12, minute: 0)))
+    let change = try XCTUnwrap(oslo.date(from: DateComponents(year: 2026, month: 10, day: 26, hour: 12, minute: 0)))
+    tracker.sessionStarted(id: session, workspaceID: workspaceID, workspaceName: "Test", agent: "shell", status: "running", at: start)
+    tracker.sessionStatusChanged(id: session, status: "idle", at: change)
+    let days = tracker.loadDocument().days
+    // Day keys follow each segment cursor's UTC day, so the invariant is conservation:
+    // exactly the full 86_400 absolute seconds are booked once, no matter how the
+    // local-midnight segmentation and UTC keys interact across the 25-hour day.
+    XCTAssertEqual(days.reduce(0) { $0 + $1.workspaces.reduce(0) { $0 + $1.runningSeconds } }, 86_400, accuracy: 0.001)
+  }
+
   func testLocalUsageLogSnapshotReaderIsOptionalAndSizeCapped() throws {
     let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     defer { try? FileManager.default.removeItem(at: home) }
@@ -978,7 +1097,7 @@ extension LanebayCoreTests {
       defaultDirectory: nil,
       homeDirectory: home
     )
-    XCTAssertEqual(draft.featuredAgents.map(\.id), ["shell", "orchestrator", "codex", "claude", "cursor-agent"])
+    XCTAssertEqual(draft.featuredAgents.map(\.id), ["shell", "orchestrator", "freebuff", "opencode", "codex", "claude", "cursor-agent"])
     XCTAssertTrue(draft.customAgents.isEmpty)
     XCTAssertEqual(draft.selectedAgentID, "shell")
     XCTAssertEqual(draft.selectedDirectoryPath, home.resolvingSymlinksInPath().path)

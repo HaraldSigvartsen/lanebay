@@ -199,7 +199,7 @@ final class BoardViewModelTests: XCTestCase {
       board.moveNode(id, x: -50, y: 120)
       board.resizeNode(id, width: 10, height: 5)
       let moved = try XCTUnwrap(board.workspace?.nodes.last)
-      XCTAssertEqual(moved.frame, NodeFrame(x: -50, y: 120, w: 280, h: 160))
+      XCTAssertEqual(moved.frame, NodeFrame(x: -50, y: 120, w: 420, h: 200), "console cards keep the terminal-friendly minimum")
       await board.closeConsole(id)
       XCTAssertFalse(board.workspace!.nodes.contains { $0.id == id })
       XCTAssertTrue(board.selectedNodeIDs.isEmpty)
@@ -282,7 +282,7 @@ final class BoardViewModelTests: XCTestCase {
     board.resizeNode(shell, width: 520, height: 280)
     let other = board.addConsole(agent: .shell, cwd: otherDir)
     board.moveNode(other, x: 600, y: 96)
-    board.resizeNode(other, width: 360, height: 200)
+    board.resizeNode(other, width: 440, height: 200)
     await board.startConsole(shell)
     XCTAssertEqual(board.sessions[shell]?.isRunning, true)
     XCTAssertEqual(board.workspace?.nodes.first { $0.id == shell }?.notStarted, false)
@@ -301,7 +301,7 @@ final class BoardViewModelTests: XCTestCase {
     let shellNode = try XCTUnwrap(restored.workspace?.nodes.first { $0.id == shell })
     let otherNode = try XCTUnwrap(restored.workspace?.nodes.first { $0.id == other })
     XCTAssertEqual(shellNode.frame, NodeFrame(x: 48, y: 36, w: 520, h: 280))
-    XCTAssertEqual(otherNode.frame, NodeFrame(x: 600, y: 96, w: 360, h: 200))
+    XCTAssertEqual(otherNode.frame, NodeFrame(x: 600, y: 96, w: 440, h: 200))
     XCTAssertEqual(shellNode.cwd.standardizedFileURL.path, shellDir.standardizedFileURL.path)
     XCTAssertEqual(otherNode.cwd.standardizedFileURL.path, otherDir.standardizedFileURL.path)
     XCTAssertEqual(shellNode.agentID, "shell")
@@ -1606,36 +1606,25 @@ extension BoardViewModelTests {
     XCTAssertEqual(AgentPickerCatalog.accessibilityIdentifier(agentID: "shell"), "agent.shell")
   }
 
-  func testMarkdownRailCaptionFitsWithoutAnEllipsis() async throws {
-    let narrow = NSButton(title: "Markdown", target: nil, action: nil)
+  func testSidebarRowsKeepEveryLabelOnOneLine() async throws {
+    let narrow = NSButton(title: "Innstillinger", target: nil, action: nil)
     narrow.isBordered = false
     narrow.font = .systemFont(ofSize: 11)
-    narrow.frame = NSRect(x: 0, y: 0, width: 52, height: BoardRailMetrics.buttonHeight)
-    XCTAssertFalse(BoardRailMetrics.captionFits(narrow), "A 52 pt rail button clips Markdown to an ellipsis")
-    XCTAssertGreaterThan(BoardRailMetrics.buttonWidth, 52)
+    narrow.frame = NSRect(x: 0, y: 0, width: 52, height: BoardRailMetrics.rowHeight)
+    XCTAssertFalse(BoardRailMetrics.captionFits(narrow), "A 52 pt row clips Innstillinger to an ellipsis")
+    XCTAssertEqual(BoardRailMetrics.sidebarWidth, 208)
+    XCTAssertEqual(BoardRailMetrics.rowHeight, 32)
 
-    let panels = [BoardRailPanel(id: "board", icon: .workspace, title: "Board", isSelected: false) {}]
+    let panels = [BoardRailPanel(id: "board", icon: .workspace, title: "Agenter", isSelected: false) {}]
       + BoardSidePanel.railOrder.map { panel in
-        BoardRailPanel(id: panel.rawValue, icon: panel.icon, title: panel.railTitle, isSelected: panel == .markdown) {}
+        BoardRailPanel(
+          id: panel.rawValue, icon: panel.icon, title: panel.railTitle, section: panel.section,
+          badge: panel == .activity ? 4 : nil, isSelected: panel == .markdown) {}
       }
     let rail = BoardRail(
-      panels: panels,
-      canCreateGroup: true,
-      canManageGroups: true,
-      onCreateGroup: {},
-      onManageGroups: {}
-    ) {
-      AXActionButton(
-        title: "Console",
-        systemImage: "plus",
-        identifier: "rail.addConsole",
-        accessibilityLabel: "Add console",
-        enabled: true,
-        highlighted: false,
-        compact: true
-      ) {}
-      .frame(width: BoardRailMetrics.buttonWidth, height: BoardRailMetrics.buttonHeight)
-    }
+      workspaceName: "Lanebay",
+      panels: panels
+    )
     let host = NSHostingView(rootView: rail)
     let window = NSWindow(
       contentRect: NSRect(x: 0, y: 0, width: 800, height: 800),
@@ -1653,37 +1642,27 @@ extension BoardViewModelTests {
     let markdown = try XCTUnwrap(Self.button(identifier: "rail.panel.markdown", in: host))
     XCTAssertEqual(markdown.title, "Markdown")
     XCTAssertTrue(BoardRailMetrics.captionFits(markdown))
-    XCTAssertGreaterThanOrEqual(markdown.bounds.width, BoardRailMetrics.buttonWidth - 0.5)
-    for identifier in ["rail.panel.settings", "rail.panel.github", "rail.addConsole", "rail.createGroup", "rail.manageGroups"] {
+    XCTAssertEqual(markdown.bounds.height, BoardRailMetrics.rowHeight, accuracy: 1)
+    for identifier in [
+      "rail.panel.board", "rail.panel.planner", "rail.panel.loops", "rail.panel.settings", "rail.panel.github",
+    ] {
       let button = try XCTUnwrap(Self.button(identifier: identifier, in: host), identifier)
       XCTAssertTrue(BoardRailMetrics.captionFits(button), identifier)
+      XCTAssertLessThanOrEqual(button.bounds.height, BoardRailMetrics.rowHeight + 1, identifier)
     }
+    XCTAssertEqual(try XCTUnwrap(Self.button(identifier: "rail.panel.presets", in: host)).title, "Maler")
+    XCTAssertEqual(try XCTUnwrap(Self.button(identifier: "rail.panel.settings", in: host)).title, "Innstillinger")
     window.orderOut(nil)
   }
 
-  func testPinnedRailActionsStayOnScreenAndClickAt800Points() async throws {
-    let clicks = RailClickFlags()
-    let panels = (0..<14).map { index in
+  func testRailHasNoPinnedActionsAndScrollsAt800Points() async throws {
+    let panels = (0..<26).map { index in
       BoardRailPanel(icon: .workspace, title: "Panel \(index)", isSelected: index == 0) {}
     }
     let rail = BoardRail(
-      panels: panels,
-      canCreateGroup: true,
-      canManageGroups: true,
-      onCreateGroup: { clicks.group = true },
-      onManageGroups: { clicks.manage = true }
-    ) {
-      AXActionButton(
-        title: "Console",
-        systemImage: "plus",
-        identifier: "rail.addConsole",
-        accessibilityLabel: "Add console",
-        enabled: true,
-        highlighted: false,
-        compact: true
-      ) { clicks.add = true }
-      .frame(width: BoardRailMetrics.buttonWidth, height: BoardRailMetrics.buttonHeight)
-    }
+      workspaceName: "Lanebay",
+      panels: panels
+    )
     let host = NSHostingView(rootView: rail)
     let window = NSWindow(
       contentRect: NSRect(x: 0, y: 0, width: 800, height: 800),
@@ -1705,33 +1684,90 @@ extension BoardViewModelTests {
     XCTAssertLessThanOrEqual(host.bounds.height, 801)
     let clip = try XCTUnwrap(Self.deepestClipView(in: host))
     let document = try XCTUnwrap(Self.descendant(named: "DocumentView", in: clip))
-    XCTAssertGreaterThan(
-      document.bounds.height, clip.bounds.height,
-      "Panel list must scroll inside the space left by Add console, Group, and Manage")
-    let clipFrame = clip.convert(clip.bounds, to: host)
+    XCTAssertGreaterThan(document.bounds.height, clip.bounds.height, "Panel list scrolls")
+    XCTAssertGreaterThan(clip.bounds.height, 600, "Without pinned actions the list uses the full height")
     for identifier in ["rail.addConsole", "rail.createGroup", "rail.manageGroups"] {
-      let button = try XCTUnwrap(Self.button(identifier: identifier, in: host), identifier)
-      let frame = button.convert(button.bounds, to: host)
-      let center = CGPoint(x: frame.midX, y: frame.midY)
-      XCTAssertTrue(host.bounds.contains(center), "\(identifier) center \(center) outside \(host.bounds)")
-      XCTAssertFalse(
-        clipFrame.intersects(frame.insetBy(dx: 2, dy: 2)),
-        "\(identifier) overlaps the scrolling panels")
-      button.performClick(nil)
+      XCTAssertNil(Self.button(identifier: identifier, in: host), "\(identifier) moved to the board top bar")
     }
-    try await Task.sleep(for: .milliseconds(200))
-    XCTAssertTrue(clicks.add)
-    XCTAssertTrue(clicks.group)
-    XCTAssertTrue(clicks.manage)
     window.orderOut(nil)
+  }
+
+  func testSendAndCloseAppendActivityEvents() async throws {
+    let (board, _, root) = fixture()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let consoleID = board.addConsole(agent: .shell, cwd: root)
+    board.setConsoleTitle(consoleID, title: "Build shell")
+    let session = ConsoleSession(supervisor: ProcessSupervisor())
+    session.setRunningForTesting(true)
+    session.setStatus(.idle)
+    board.installSessionForTesting(session, id: consoleID)
+
+    XCTAssertTrue(board.sendToConsole("hello\nworld", nodeID: consoleID))
+    let send = try XCTUnwrap(board.activity.events.first)
+    XCTAssertEqual(send.kind, .send)
+    XCTAssertEqual(send.title, "Build shell")
+    XCTAssertEqual(send.detail, "hello world")
+
+    await board.closeConsole(consoleID)
+    let close = try XCTUnwrap(board.activity.events.first)
+    XCTAssertEqual(close.kind, .stop)
+    XCTAssertEqual(close.title, "Build shell")
+    XCTAssertTrue(board.activity.events.contains { $0.kind == .send })
+  }
+
+  func testActivityBadgeCountsEventsSinceThePanelWasLastOpened() async throws {
+    let (board, _, root) = fixture()
+    defer { try? FileManager.default.removeItem(at: root) }
+    XCTAssertEqual(board.activityUnreadCount, 0)
+    board.recordActivity(.start, title: "Shell", detail: "started")
+    board.recordActivity(.send, title: "Shell", detail: "hello")
+    XCTAssertEqual(board.activityUnreadCount, 2)
+    board.markActivityRead()
+    XCTAssertEqual(board.activityUnreadCount, 0)
+    board.recordActivity(.stop, title: "Shell", detail: "closed")
+    XCTAssertEqual(board.activityUnreadCount, 1)
+    board.markActivityRead()
+    board.clearActivity()
+    XCTAssertEqual(board.activityUnreadCount, 0)
+    await board.shutdown()
+  }
+
+  func testNavigationRequestsCarryAuthoredPlacesAndFreshTokens() async throws {
+    let (board, _, root) = fixture()
+    defer { try? FileManager.default.removeItem(at: root) }
+    board.requestNavigation(.panel(.activity))
+    XCTAssertEqual(board.navigationRequest?.target, .panel(.activity))
+    let first = try XCTUnwrap(board.navigationRequest).token
+    board.clearNavigationRequest()
+    XCTAssertNil(board.navigationRequest)
+    board.requestNavigation(.board)
+    XCTAssertEqual(board.navigationRequest?.target, .board)
+    XCTAssertNotEqual(try XCTUnwrap(board.navigationRequest).token, first)
+    XCTAssertEqual(BoardNavigation.board.title, "Agenter")
+    XCTAssertEqual(BoardNavigation.panel(.loops).title, "Cron")
+    XCTAssertEqual(BoardNavigation.panel(.settings).title, "Innstillinger")
+    XCTAssertEqual(BoardNavigation.panel(.planner).title, "Orkestrering")
+    await board.shutdown()
   }
 
   func testSidePanelToggleKeepsASinglePanelOpen() {
     XCTAssertEqual(BoardSidePanel.toggled(nil, .settings), .settings)
     XCTAssertEqual(BoardSidePanel.toggled(.settings, .docs), .docs)
     XCTAssertNil(BoardSidePanel.toggled(.docs, .docs))
-    XCTAssertEqual(BoardSidePanel.railOrder.last, .planner)
-    XCTAssertFalse(BoardSidePanel.railOrder.contains(.loops))
+    XCTAssertEqual(BoardSidePanel.primaryOrder, [.planner, .loops, .activity, .settings])
+    XCTAssertEqual(BoardSidePanel.toolOrder.first, .docs)
+    XCTAssertEqual(BoardSidePanel.toolOrder.last, .shots)
+    XCTAssertEqual(BoardSidePanel.railOrder, BoardSidePanel.primaryOrder + BoardSidePanel.toolOrder)
+    XCTAssertTrue(BoardSidePanel.railOrder.contains(.loops))
+    XCTAssertEqual(BoardSidePanel.planner.section, .primary)
+    XCTAssertEqual(BoardSidePanel.loops.section, .primary)
+    XCTAssertEqual(BoardSidePanel.presets.section, .tools)
+    XCTAssertEqual(BoardSidePanel.planner.railTitle, "Orkestrering")
+    XCTAssertEqual(BoardSidePanel.loops.railTitle, "Cron")
+    XCTAssertEqual(BoardSidePanel.activity.railTitle, "Aktivitet")
+    XCTAssertEqual(BoardSidePanel.settings.railTitle, "Innstillinger")
+    XCTAssertEqual(BoardSidePanel.presets.railTitle, "Maler")
+    XCTAssertEqual(RailSection.allCases, [.primary, .tools])
     XCTAssertEqual(BoardSidePanel.planner.railIdentifier, "rail.panel.planner")
     XCTAssertEqual(BoardSidePanel.shots.hostTitle, "Screenshots")
     let home = URL(fileURLWithPath: "/tmp/lanebay-panel-home", isDirectory: true)
@@ -1764,28 +1800,19 @@ extension BoardViewModelTests {
   }
 
   func testHiddenRailPanelScrollsIntoTheClipWithoutCoveringActions() async throws {
-    let panels = [BoardRailPanel(id: "board", icon: .workspace, title: "Board", isSelected: true) {}]
+    let panels = [BoardRailPanel(id: "board", icon: .workspace, title: "Agenter", isSelected: true) {}]
       + BoardSidePanel.railOrder.map { panel in
-        BoardRailPanel(id: panel.rawValue, icon: panel.icon, title: panel.railTitle, isSelected: false) {}
+        BoardRailPanel(
+          id: panel.rawValue, icon: panel.icon, title: panel.railTitle, section: panel.section,
+          isSelected: false) {}
+      }
+      + (0..<20).map { index in
+        BoardRailPanel(id: "extra\(index)", icon: .files, title: "Extra \(index)", section: .tools, isSelected: false) {}
       }
     let rail = BoardRail(
-      panels: panels,
-      canCreateGroup: true,
-      canManageGroups: true,
-      onCreateGroup: {},
-      onManageGroups: {}
-    ) {
-      AXActionButton(
-        title: "Console",
-        systemImage: "plus",
-        identifier: "rail.addConsole",
-        accessibilityLabel: "Add console",
-        enabled: true,
-        highlighted: false,
-        compact: true
-      ) {}
-      .frame(width: BoardRailMetrics.buttonWidth, height: BoardRailMetrics.buttonHeight)
-    }
+      workspaceName: "Lanebay",
+      panels: panels
+    )
     let host = NSHostingView(rootView: rail)
     let window = NSWindow(
       contentRect: NSRect(x: 0, y: 0, width: 800, height: 800),
@@ -1802,21 +1829,16 @@ extension BoardViewModelTests {
       try await Task.sleep(for: .milliseconds(50))
     }
     let clip = try XCTUnwrap(Self.deepestClipView(in: host))
-    let planner = try XCTUnwrap(Self.button(identifier: "rail.panel.planner", in: host))
-    let plannerFrame = planner.convert(planner.bounds, to: clip)
+    let hidden = try XCTUnwrap(Self.button(identifier: "rail.panel.extra19", in: host))
+    let hiddenFrame = hidden.convert(hidden.bounds, to: clip)
     XCTAssertFalse(
-      clip.bounds.contains(CGPoint(x: plannerFrame.midX, y: plannerFrame.midY)),
-      "Planner starts below the fold at 800pt")
-    planner.scrollToVisible(planner.bounds)
+      clip.bounds.contains(CGPoint(x: hiddenFrame.midX, y: hiddenFrame.midY)),
+      "The last tool starts below the fold at 800pt")
+    hidden.scrollToVisible(hidden.bounds)
     host.layoutSubtreeIfNeeded()
     try await Task.sleep(for: .milliseconds(100))
-    let revealed = planner.convert(planner.bounds, to: clip)
+    let revealed = hidden.convert(hidden.bounds, to: clip)
     XCTAssertTrue(clip.bounds.contains(CGPoint(x: revealed.midX, y: revealed.midY)))
-    let add = try XCTUnwrap(Self.button(identifier: "rail.addConsole", in: host))
-    let addFrame = add.convert(add.bounds, to: host)
-    let clipFrame = clip.convert(clip.bounds, to: host)
-    XCTAssertTrue(host.bounds.contains(CGPoint(x: addFrame.midX, y: addFrame.midY)))
-    XCTAssertFalse(clipFrame.intersects(addFrame.insetBy(dx: 2, dy: 2)))
     window.orderOut(nil)
   }
 
@@ -1903,10 +1925,10 @@ extension BoardViewModelTests {
   }
 
   func testStatusLabelIncludesExitCodeAndLaunchFailureIsAnError() {
-    XCTAssertEqual(AgentStatus.finished.label(exitCode: 0), "Exited 0")
-    XCTAssertEqual(AgentStatus.error.label(exitCode: 3), "Exited 3")
-    XCTAssertEqual(AgentStatus.error.label(exitCode: nil), "Error")
-    XCTAssertEqual(AgentStatus.running.label(exitCode: 3), "Running")
+    XCTAssertEqual(AgentStatus.finished.label(exitCode: 0), "Avsluttet 0")
+    XCTAssertEqual(AgentStatus.error.label(exitCode: 3), "Avsluttet 3")
+    XCTAssertEqual(AgentStatus.error.label(exitCode: nil), "Feil")
+    XCTAssertEqual(AgentStatus.running.label(exitCode: 3), "Kjører")
     XCTAssertEqual(ConsoleCardStatus.resolve(sessionStatus: nil, hasLaunchError: true), .error)
     XCTAssertEqual(ConsoleCardStatus.resolve(sessionStatus: nil, hasLaunchError: false), .stopped)
     XCTAssertEqual(ConsoleCardStatus.resolve(sessionStatus: .idle, hasLaunchError: true), .idle)
@@ -1951,7 +1973,7 @@ extension BoardViewModelTests {
     session.send(Data("echo bye; exit 3\r".utf8))
     try await waitForExit(code: 3, session: session, timeout: .seconds(6))
     XCTAssertEqual(session.status, .error)
-    XCTAssertEqual(session.status.label(exitCode: session.exitCode), "Exited 3")
+    XCTAssertEqual(session.status.label(exitCode: session.exitCode), "Avsluttet 3")
     try await Task.sleep(for: .seconds(2.4))
     XCTAssertEqual(session.status, .error, "output after exit must not put the light back on Working")
     XCTAssertEqual(session.exitCode, 3)
@@ -2241,7 +2263,7 @@ extension BoardViewModelTests {
       try? FileManager.default.removeItem(at: root)
     }
     board.settings.setDefaultWorkingDirectory(fallback)
-    XCTAssertNil(board.createConsoleFromNewTerminal(agentID: "opencode", directory: project))
+    XCTAssertNil(board.createConsoleFromNewTerminal(agentID: "aider", directory: project))
     XCTAssertNil(board.createConsoleFromNewTerminal(agentID: "shell", directory: file))
     XCTAssertTrue(board.workspace?.nodes.isEmpty == true)
     XCTAssertEqual(board.newTerminalError, "Choose a folder that exists.")
@@ -2371,13 +2393,6 @@ extension BoardViewModelTests {
 private final class FloodObservation {
   var stop = false
   func finish() { stop = true }
-}
-
-@MainActor
-private final class RailClickFlags {
-  var add = false
-  var group = false
-  var manage = false
 }
 
 @MainActor

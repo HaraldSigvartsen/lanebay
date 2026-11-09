@@ -125,23 +125,99 @@ public struct ChatPanel: View {
         for group in workspace.groups { if let id = group.leadNodeID, let node = workspace.nodes.first(where: { $0.id == id }) { result.append((.lead(group.id), "\(group.name) lead · \(node.title)")) }; result.append((.group(group.id), "\(group.name) · idle members")) }
         return result
     }
+    /// Shown when the transcript is empty. Pinned by `VerktoyPanelsTests`.
+    public static let emptyStateTitle = "Ingen meldinger ennå"
+
     public var body: some View {
-        VStack(spacing: Spacing.sm) {
-            Picker("Send to", selection: $model.target) { Text("Choose recipient").tag(ChatTarget?.none); ForEach(targets, id: \.0) { target, label in Text(label).tag(Optional(target)) } }.pickerStyle(.menu)
-            ScrollViewReader { proxy in
-                ScrollView { LazyVStack(alignment: .leading, spacing: Spacing.sm) {
-                    ForEach(model.messages) { message in
-                        VStack(alignment: .leading, spacing: Spacing.xxs) {
-                            Text(message.kind == .sent ? "You → \(message.target)" : "\(message.target) · console output").font(Typography.caption).foregroundStyle(Palette.mutedInk)
-                            Text(message.text).font(Typography.body).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-                        }.padding(Spacing.sm).background(message.kind == .sent ? Palette.accentSoft : Palette.raisedSurface, in: RoundedRectangle(cornerRadius: Spacing.radiusSmall)).id(message.id)
+        VStack(alignment: .leading, spacing: DS.Space.lg) {
+            PanelSection("Mottaker") {
+                Picker("Send to", selection: $model.target) {
+                    Text("Choose recipient").tag(ChatTarget?.none)
+                    ForEach(targets, id: \.0) { target, label in Text(label).tag(Optional(target)) }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .accessibilityIdentifier("chat.target")
+            }
+
+            PanelSection("Samtale", fillsHeight: true) {
+                if model.messages.isEmpty {
+                    EmptyStateView(
+                        symbol: "bubble.left.and.bubble.right",
+                        title: Self.emptyStateTitle,
+                        message: "Meldinger og nylig konsollutskrift vises her.",
+                        identifier: "chat.empty")
+                } else {
+                    transcript
+                }
+            }
+
+            PanelSection("Melding") {
+                TextEditor(text: $model.draft)
+                    .font(DS.Font.body)
+                    .frame(minHeight: 72, maxHeight: 120)
+                    .scrollContentBackground(.hidden)
+                    .padding(DS.Space.xxs)
+                    .background(
+                        DS.Color.raisedSurface,
+                        in: RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous)
+                            .strokeBorder(DS.Color.hairline, lineWidth: 1))
+                    .accessibilityLabel("Chat message")
+                HStack(spacing: DS.Space.xs) {
+                    if let error = model.errorMessage {
+                        Text(error)
+                            .font(DS.Font.caption)
+                            .foregroundStyle(DS.Color.status(.error))
+                            .lineLimit(2)
                     }
-                }.padding(Spacing.sm) }.onChange(of: model.messages.last?.id) { _, id in if let id { proxy.scrollTo(id, anchor: .bottom) } }
-            }.overlay { if model.messages.isEmpty { Text("Messages and recent console output will appear here.").font(Typography.caption).foregroundStyle(Palette.mutedInk) } }
-            TextEditor(text: $model.draft).font(Typography.body).frame(minHeight: 72, maxHeight: 120).scrollContentBackground(.hidden).padding(Spacing.xxs).background(Palette.raisedSurface, in: RoundedRectangle(cornerRadius: Spacing.radiusSmall)).overlay(RoundedRectangle(cornerRadius: Spacing.radiusSmall).stroke(Palette.border)).accessibilityLabel("Chat message")
-            HStack { if let error = model.errorMessage { Text(error).font(Typography.caption).foregroundStyle(Palette.status(.error)).lineLimit(2) }; Spacer(); Button { send() } label: { Label("Send", systemImage: "arrow.up") }.buttonStyle(.borderedProminent).disabled(model.target == nil || model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
-        }.padding(Spacing.sm).background(Palette.surface)
+                    Spacer(minLength: 0)
+                    Button { send() } label: { Label("Send", systemImage: "arrow.up") }
+                        .buttonStyle(.lbPrimary)
+                        .disabled(model.target == nil || model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .accessibilityIdentifier("chat.send")
+                }
+            }
+        }
+        .padding(DS.Space.lg)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
+
+    private var transcript: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: DS.Space.sm) {
+                    ForEach(model.messages) { message in
+                        messageRow(message).id(message.id)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .onChange(of: model.messages.last?.id) { _, id in
+                if let id { proxy.scrollTo(id, anchor: .bottom) }
+            }
+            .accessibilityIdentifier("chat.transcript")
+        }
+    }
+
+    private func messageRow(_ message: ChatMessage) -> some View {
+        VStack(alignment: .leading, spacing: DS.Space.xxs) {
+            Text(message.kind == .sent ? "You → \(message.target)" : "\(message.target) · console output")
+                .font(DS.Font.caption)
+                .foregroundStyle(DS.Color.mutedInk)
+            Text(message.text)
+                .font(DS.Font.body)
+                .foregroundStyle(DS.Color.ink)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(DS.Space.sm)
+        .background(
+            message.kind == .sent ? DS.Color.accentSoft : DS.Color.raisedSurface,
+            in: RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous))
+    }
+
     private func send() {
         guard let target = model.target else { return }
         let entry = targets.first { $0.0 == target }?.1 ?? "Console"

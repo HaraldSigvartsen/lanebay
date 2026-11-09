@@ -11,9 +11,13 @@ public struct AppPreferences: Codable, Sendable, Equatable {
     public var customExecutables: [CustomAgentExecutable]
     public var accountProfiles: [AgentAccountProfile]
     public var lastUsedAgentID: String?
+    /// Last model chosen per agent ID; empty means the CLI default.
+    public var lastModelByAgentID: [String: String]
     public var recentWorkingDirectories: [URL]
     /// When true, a send to another console shows the target and the text first.
     public var askBeforeSendingToTerminal: Bool
+    /// App appearance. Dark is the default; prefs written before this key load as dark.
+    public var appearance: AppearanceMode
 
     public init(
         version: Int = AppPreferencesStore.currentSchemaVersion,
@@ -25,8 +29,10 @@ public struct AppPreferences: Codable, Sendable, Equatable {
         customExecutables: [CustomAgentExecutable] = [],
         accountProfiles: [AgentAccountProfile] = [],
         lastUsedAgentID: String? = nil,
+        lastModelByAgentID: [String: String] = [:],
         recentWorkingDirectories: [URL] = [],
-        askBeforeSendingToTerminal: Bool = true
+        askBeforeSendingToTerminal: Bool = true,
+        appearance: AppearanceMode = .dark
     ) {
         self.version = version
         self.defaultWorkingDirectory = defaultWorkingDirectory
@@ -37,13 +43,15 @@ public struct AppPreferences: Codable, Sendable, Equatable {
         self.customExecutables = customExecutables
         self.accountProfiles = accountProfiles
         self.lastUsedAgentID = lastUsedAgentID
+        self.lastModelByAgentID = lastModelByAgentID
         self.recentWorkingDirectories = recentWorkingDirectories
         self.askBeforeSendingToTerminal = askBeforeSendingToTerminal
+        self.appearance = appearance
     }
 
     private enum CodingKeys: String, CodingKey {
         case version, defaultWorkingDirectory, restoreLastWorkspace, showNotifications, speakWaitingForInputStatus, lastWorkspaceID
-        case customExecutables, accountProfiles, lastUsedAgentID, recentWorkingDirectories, askBeforeSendingToTerminal
+        case customExecutables, accountProfiles, lastUsedAgentID, lastModelByAgentID, recentWorkingDirectories, askBeforeSendingToTerminal, appearance
         case speakNeedsYouStatus // legacy key
     }
 
@@ -61,9 +69,12 @@ public struct AppPreferences: Codable, Sendable, Equatable {
             customExecutables: try values.decodeIfPresent([CustomAgentExecutable].self, forKey: .customExecutables) ?? [],
             accountProfiles: try values.decodeIfPresent([AgentAccountProfile].self, forKey: .accountProfiles) ?? [],
             lastUsedAgentID: Self.sanitizedAgentID(try values.decodeIfPresent(String.self, forKey: .lastUsedAgentID)),
+            lastModelByAgentID: Self.sanitizedModels(
+                try values.decodeIfPresent([String: String].self, forKey: .lastModelByAgentID) ?? [:]),
             recentWorkingDirectories: Self.sanitizedDirectories(
                 try values.decodeIfPresent([URL].self, forKey: .recentWorkingDirectories) ?? []),
-            askBeforeSendingToTerminal: try values.decodeIfPresent(Bool.self, forKey: .askBeforeSendingToTerminal) ?? true
+            askBeforeSendingToTerminal: try values.decodeIfPresent(Bool.self, forKey: .askBeforeSendingToTerminal) ?? true,
+            appearance: (try? values.decodeIfPresent(AppearanceMode.self, forKey: .appearance)) ?? .dark
         )
     }
 
@@ -72,6 +83,15 @@ public struct AppPreferences: Codable, Sendable, Equatable {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard NewTerminalDraft.isAcceptableAgentID(trimmed) else { return nil }
         return trimmed
+    }
+
+    private static func sanitizedModels(_ raw: [String: String]) -> [String: String] {
+        var kept: [String: String] = [:]
+        for (agentID, model) in raw {
+            guard NewTerminalDraft.isAcceptableAgentID(agentID), ProviderModels.isAcceptableModel(model) else { continue }
+            kept[agentID] = model
+        }
+        return kept
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -85,8 +105,10 @@ public struct AppPreferences: Codable, Sendable, Equatable {
         try container.encode(customExecutables, forKey: .customExecutables)
         try container.encode(accountProfiles, forKey: .accountProfiles)
         try container.encodeIfPresent(lastUsedAgentID, forKey: .lastUsedAgentID)
+        try container.encode(lastModelByAgentID, forKey: .lastModelByAgentID)
         try container.encode(recentWorkingDirectories, forKey: .recentWorkingDirectories)
         try container.encode(askBeforeSendingToTerminal, forKey: .askBeforeSendingToTerminal)
+        try container.encode(appearance, forKey: .appearance)
     }
 
     private static func sanitizedDirectories(_ urls: [URL]) -> [URL] {
@@ -148,6 +170,27 @@ public enum AppPreferencesStoreError: Error, LocalizedError {
     public var errorDescription: String? {
         switch self {
         case let .unsupportedVersion(version): "Preferences schema version \(version) is unsupported."
+        }
+    }
+}
+
+/// Light, dark or follow macOS. `appearanceName` is the NSAppearance name to force, nil = system.
+public enum AppearanceMode: String, Codable, Sendable, CaseIterable {
+    case dark, light, system
+
+    public var appearanceName: String? {
+        switch self {
+        case .dark: return "NSAppearanceNameDarkAqua"
+        case .light: return "NSAppearanceNameAqua"
+        case .system: return nil
+        }
+    }
+
+    public var label: String {
+        switch self {
+        case .dark: return "Mørk"
+        case .light: return "Lys"
+        case .system: return "System"
         }
     }
 }

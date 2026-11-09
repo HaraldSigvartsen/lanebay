@@ -99,84 +99,147 @@ public final class MarkdownPanelModel {
 public struct MarkdownPanel: View {
     @Bindable private var model: MarkdownPanelModel
 
+    /// Shown when no Markdown file can be listed. Pinned by `VerktoyPanelsTests`.
+    public static let emptyStateTitle = "Ingen Markdown-filer"
+
     public init(model: MarkdownPanelModel) { self.model = model }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.sm) {
+        VStack(alignment: .leading, spacing: DS.Space.lg) {
             if model.projectRoots.count > 1 {
-                Picker("Project folder", selection: Binding(
-                    get: { model.selectedRoot }, set: { root in if let root { model.selectRoot(root) } }
-                )) {
-                    ForEach(model.projectRoots, id: \.path) { root in Text(root.lastPathComponent).tag(Optional(root)) }
-                }.pickerStyle(.menu)
-            }
-            if let error = model.errorMessage {
-                Text(error).font(Typography.caption).foregroundStyle(Palette.status(.error)).textSelection(.enabled)
-            } else if model.projectRoots.isEmpty {
-                Text("Add a project folder to this workspace to browse its Markdown files.")
-                    .font(Typography.body).foregroundStyle(Palette.secondaryInk)
-            } else {
-                HStack(spacing: Spacing.xs) {
-                    Text(model.selectedDocument?.relativePath ?? "Markdown")
-                        .font(Typography.caption).foregroundStyle(Palette.secondaryInk).lineLimit(1)
-                    Spacer(minLength: 0)
-                    Picker("View", selection: $model.mode) {
-                        ForEach(MarkdownPanelModel.Mode.allCases) { mode in Text(mode.rawValue).tag(mode) }
-                    }
-                    .pickerStyle(.segmented).labelsHidden().frame(width: 150)
-                    .disabled(model.selectedDocument == nil)
-                }
-                HStack(spacing: 0) {
-                    List(selection: Binding(
-                        get: { model.selectedDocument?.id }, set: { id in
-                            if let document = model.documents.first(where: { $0.id == id }) { model.select(document) }
-                        }
+                PanelSection("Prosjektmappe") {
+                    Picker("Project folder", selection: Binding(
+                        get: { model.selectedRoot }, set: { root in if let root { model.selectRoot(root) } }
                     )) {
-                        ForEach(model.documents) { document in
-                            Text(document.relativePath).font(Typography.caption).tag(Optional(document.id))
+                        ForEach(model.projectRoots, id: \.path) { root in
+                            Text(root.lastPathComponent).tag(Optional(root))
                         }
                     }
-                    .listStyle(.sidebar)
-                    .frame(minWidth: 160, idealWidth: 190)
-                    Rectangle().fill(Palette.border).frame(width: 1)
-                    Group {
-                        if let document = model.selectedDocument {
-                            ScrollView {
-                                Group {
-                                    if let error = model.selectionError {
-                                        ContentUnavailableView("Unable to read Markdown", systemImage: "exclamationmark.triangle", description: Text(error))
-                                    } else if model.mode == .source {
-                                        Text(model.source).font(Typography.body.monospaced()).textSelection(.enabled)
-                                    } else if model.renderedText != nil {
-                                        MarkdownBlocks(markdown: model.source, onOpenLink: model.openLink)
-                                            .font(Typography.body)
-                                            .tint(Palette.accent)
-                                            .environment(\.openURL, OpenURLAction { url in
-                                                model.openLink(url)
-                                                return .handled
-                                            })
-                                    } else {
-                                        Text(model.source).font(Typography.body)
-                                    }
-                                }
-                                .foregroundStyle(Palette.ink)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(Spacing.sm)
-                            }
-                            .accessibilityLabel("Markdown document \(document.relativePath)")
-                        } else {
-                            ContentUnavailableView("Select a Markdown file", systemImage: "text.alignleft", description: Text("Markdown files in the project folder appear here."))
-                        }
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .accessibilityIdentifier("markdown.projectRoot")
                 }
-                .overlay { RoundedRectangle(cornerRadius: Spacing.radiusSmall).stroke(Palette.border, lineWidth: 1) }
-                .clipShape(RoundedRectangle(cornerRadius: Spacing.radiusSmall))
             }
-            Text("Read-only · Local Markdown · 1 MB limit · Remote images disabled")
-                .font(Typography.caption).foregroundStyle(Palette.mutedInk)
+
+            if let error = model.errorMessage {
+                PanelSection("Feil") { errorText(error) }
+            } else if model.projectRoots.isEmpty {
+                EmptyStateView(
+                    symbol: "folder",
+                    title: Self.emptyStateTitle,
+                    message: "Legg til en prosjektmappe i arbeidsområdet for å bla gjennom Markdown-filene.",
+                    identifier: "markdown.empty")
+            } else if model.documents.isEmpty {
+                EmptyStateView(
+                    symbol: "text.alignleft",
+                    title: Self.emptyStateTitle,
+                    message: "Fant ingen Markdown-filer i prosjektmappen.",
+                    identifier: "markdown.empty")
+            } else {
+                PanelSection("Markdown", fillsHeight: true) { browser }
+                    .frame(maxHeight: .infinity)
+            }
+
+            Text("Kun lesing · Lokal Markdown · Eksterne bilder av · Maks 1 MB")
+                .font(DS.Font.caption)
+                .foregroundStyle(DS.Color.mutedInk)
         }
-        .padding(Spacing.sm)
-        .background(Palette.surface)
+        .padding(DS.Space.lg)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var browser: some View {
+        VStack(alignment: .leading, spacing: DS.Space.sm) {
+            HStack(spacing: DS.Space.xs) {
+                Text(model.selectedDocument?.relativePath ?? "Markdown")
+                    .font(DS.Font.caption)
+                    .foregroundStyle(DS.Color.secondaryInk)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                Picker("View", selection: $model.mode) {
+                    ForEach(MarkdownPanelModel.Mode.allCases) { mode in Text(mode.rawValue).tag(mode) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 150)
+                .disabled(model.selectedDocument == nil)
+                .accessibilityIdentifier("markdown.mode")
+            }
+
+            HStack(spacing: 0) {
+                List(selection: Binding(
+                    get: { model.selectedDocument?.id }, set: { id in
+                        if let document = model.documents.first(where: { $0.id == id }) { model.select(document) }
+                    }
+                )) {
+                    ForEach(model.documents) { document in
+                        let isSelected = model.selectedDocument?.id == document.id
+                        PanelRow(isSelected: isSelected) {
+                            Text(document.relativePath)
+                                .font(DS.Font.caption)
+                                .foregroundStyle(isSelected ? DS.Color.accentInk : DS.Color.ink)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                        .tag(Optional(document.id))
+                    }
+                }
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                .frame(minWidth: 160, idealWidth: 190)
+                .accessibilityIdentifier("markdown.fileList")
+
+                Rectangle().fill(DS.Color.hairline).frame(width: 1)
+
+                Group {
+                    if let document = model.selectedDocument {
+                        ScrollView {
+                            Group {
+                                if let error = model.selectionError {
+                                    EmptyStateView(
+                                        symbol: "exclamationmark.triangle",
+                                        title: "Unable to read Markdown",
+                                        message: error,
+                                        identifier: "markdown.selectionError")
+                                } else if model.mode == .source {
+                                    Text(model.source)
+                                        .font(DS.Font.mono)
+                                        .textSelection(.enabled)
+                                } else if model.renderedText != nil {
+                                    MarkdownBlocks(markdown: model.source, onOpenLink: model.openLink)
+                                        .font(DS.Font.body)
+                                        .tint(DS.Color.accent)
+                                        .environment(\.openURL, OpenURLAction { url in
+                                            model.openLink(url)
+                                            return .handled
+                                        })
+                                } else {
+                                    Text(model.source).font(DS.Font.body)
+                                }
+                            }
+                            .foregroundStyle(DS.Color.ink)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(DS.Space.sm)
+                        }
+                        .accessibilityLabel("Markdown document \(document.relativePath)")
+                        .accessibilityIdentifier("markdown.text")
+                    } else {
+                        EmptyStateView(
+                            symbol: "text.alignleft",
+                            title: "Select a Markdown file",
+                            message: "Markdown files in the project folder appear here.",
+                            identifier: "markdown.noSelection")
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+    }
+
+    private func errorText(_ error: String) -> some View {
+        Text(error)
+            .font(DS.Font.caption)
+            .foregroundStyle(DS.Color.status(.error))
+            .textSelection(.enabled)
     }
 }

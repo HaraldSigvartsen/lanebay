@@ -17,9 +17,28 @@ several consoles at once.
   an output/idle heuristic fallback.
 - Board layout is saved locally and restored on launch. Consoles come back stopped
   and start when you click Start.
-- Send one prompt to selected or idle consoles, groups with a lead console, and simple loops.
-- Read-only side panels for docs, code, Markdown, skills, agent memory files, GitHub (via `gh`) and local usage.
+- Send tasks to selected consoles, groups with a lead, and connected agent cards.
+- Chat with cards by name or `@` handle, and route replies along wires.
+- Schedule messages for a card in the app or with `lanebay cron`. Scheduled messages
+  currently run only while the app is open and for the active workspace.
+- Manage agents, models, loops, and workspaces from the board. Utility panels show
+  docs, code, Markdown, skills, memory files, GitHub (via `gh`), and local usage.
 - "Ask before sending to a terminal" is on by default. Lanebay never auto-approves agent permission prompts.
+
+## Local CLI
+
+With the app open, install the CLI and send a short task to an agent card:
+
+```sh
+scripts/install-cli.sh
+lanebay spawn --provider freebuff --cwd ~/Code/myrepo --task "Run the tests" --timeout 55m
+lanebay status
+lanebay cron add Builder --when "hverdager 09:00" --text "Run the tests"
+lanebay cron list
+```
+
+The control socket accepts only the current user and a per-launch token. Agent
+tasks and handoff notes are written under `<cwd>/.lanebay/handoffs/`.
 
 ## Privacy
 

@@ -99,6 +99,7 @@ public enum AgentCatalog {
         .init(id: "shell", displayName: "Shell", executableName: "zsh", defaultArguments: ["-l"], hookSupport: .none),
         .init(id: "codex", displayName: "Codex", executableName: "codex", hookSupport: .codex),
         .init(id: "claude", displayName: "Claude Code", executableName: "claude", hookSupport: .claude),
+        .init(id: "freebuff", displayName: "FreeBuff", executableName: "freebuff", hookSupport: .none),
         .init(id: "opencode", displayName: "OpenCode", executableName: "opencode", hookSupport: .none),
         .init(id: "aider", displayName: "Aider", executableName: "aider", hookSupport: .none),
         .init(id: "gemini-cli", displayName: "Gemini CLI", executableName: "gemini", hookSupport: .none),
@@ -192,6 +193,8 @@ public enum AgentCatalog {
 
     public static func isExecutableFile(_ url: URL, fileManager: FileManager = .default) -> Bool {
         guard fileManager.fileExists(atPath: url.path) else { return false }
+        // npm and Homebrew install CLIs as symlinks (e.g. ~/.npm-global/bin/freebuff); check the target.
+        let url = url.resolvingSymlinksInPath()
         guard let attributes = try? fileManager.attributesOfItem(atPath: url.path),
               (attributes[.type] as? FileAttributeType) == .typeRegular else { return false }
         return access(url.path, X_OK) == 0

@@ -11,32 +11,47 @@ enum PanelStorage {
   }
 }
 
+/// How the sidebar groups a side panel: the five section places, or a tool under `Verktøy`.
+public enum RailSection: String, CaseIterable, Sendable {
+  case primary, tools
+}
+
 /// One side panel at a time. Opening another replaces the current one; opening the same one closes it.
 public enum BoardSidePanel: String, CaseIterable, Identifiable, Sendable {
-  case settings, docs, code, markdown, skills, memory, presets, chat, github, usage, git, shots, planner, loops
+  case settings, activity, docs, code, markdown, skills, memory, presets, chat, github, usage, git, shots, planner,
+    loops
 
   public var id: String { rawValue }
 
-  public static let railOrder: [BoardSidePanel] = [
-    .settings, .docs, .code, .markdown, .skills, .memory, .presets, .chat, .github, .usage, .git, .shots, .planner,
+  /// The five places in the sidebar. The board itself (`Agenter`) is not a panel.
+  public static let primaryOrder: [BoardSidePanel] = [.planner, .loops, .activity, .settings]
+  /// The old rail Chat (agent-to-agent log) is replaced by the board chat panel (⌘⇧C), so it is not in the rail.
+  public static let toolOrder: [BoardSidePanel] = [
+    .docs, .code, .markdown, .skills, .memory, .presets, .github, .usage, .git, .shots,
   ]
+  public static let railOrder: [BoardSidePanel] = primaryOrder + toolOrder
+
+  public var section: RailSection {
+    Self.primaryOrder.contains(self) ? .primary : .tools
+  }
 
   public var railTitle: String {
     switch self {
-    case .settings: "Settings"
+    case .settings: "Innstillinger"
+    case .activity: "Aktivitet"
     case .docs: "Docs"
     case .code: "Code"
     case .markdown: "Markdown"
     case .skills: "Skills"
     case .memory: "Memory"
-    case .presets: "Presets"
+    case .presets: "Maler"
     case .chat: "Chat"
     case .github: "GitHub"
     case .usage: "Usage"
     case .git: "Git"
     case .shots: "Shots"
-    case .planner: "Planner"
-    case .loops: "Loops"
+    case .planner: "Orkestrering"
+    case .loops: "Cron"
     }
   }
 
@@ -51,20 +66,21 @@ public enum BoardSidePanel: String, CaseIterable, Identifiable, Sendable {
     case .code: .code
     case .memory: .agents
     case .presets, .chat, .git, .planner, .loops: .command
-    case .github, .usage: .activity
+    case .activity, .github, .usage: .activity
     }
   }
 
   public var width: CGFloat {
     switch self {
-    case .settings: 360
+    case .settings: 460
+    case .activity: 440
     case .docs, .skills, .memory: 620
     case .code, .markdown, .planner: 720
     case .presets, .github, .usage: 520
-    case .chat: 420
+    case .chat: 460
     case .git: 580
     case .shots: 760
-    case .loops: 300
+    case .loops: 440
     }
   }
 
@@ -74,6 +90,31 @@ public enum BoardSidePanel: String, CaseIterable, Identifiable, Sendable {
 
   public static func toggled(_ current: BoardSidePanel?, _ panel: BoardSidePanel) -> BoardSidePanel? {
     current == panel ? nil : panel
+  }
+}
+
+/// A sidebar place a keyboard shortcut can go to: the board itself, or one side panel.
+public enum BoardNavigation: Equatable, Sendable {
+  case board
+  case panel(BoardSidePanel)
+
+  public var title: String {
+    switch self {
+    case .board: "Agenter"
+    case let .panel(panel): panel.railTitle
+    }
+  }
+}
+
+/// A navigation request from the app menu (⌘1–⌘5).
+/// The token lets the board run the same request twice in a row.
+public struct BoardNavigationRequest: Equatable, Sendable {
+  public let token: Int
+  public let target: BoardNavigation
+
+  public init(token: Int, target: BoardNavigation) {
+    self.token = token
+    self.target = target
   }
 }
 

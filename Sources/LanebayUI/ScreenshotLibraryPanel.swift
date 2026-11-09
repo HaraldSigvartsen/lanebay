@@ -3,6 +3,7 @@ import CoreGraphics
 import Foundation
 import ImageIO
 import LanebayCore
+import LanebayDesign
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -256,12 +257,21 @@ public struct ScreenshotLibraryPanel: View {
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.sm) {
-            HStack {
-                Button("Import…") { model.chooseImportFromFilePicker() }
-                Button("Paste") { model.importFromPasteboard() }
+        VStack(alignment: .leading, spacing: DS.Space.sm) {
+            HStack(spacing: DS.Space.xs) {
+                Button {
+                    model.chooseImportFromFilePicker()
+                } label: { Label("Importer…", systemImage: "square.and.arrow.down") }
+                    .buttonStyle(.lbPrimary)
+                Button {
+                    model.importFromPasteboard()
+                } label: { Label("Lim inn", systemImage: "doc.on.clipboard") }
+                    .buttonStyle(.lbSecondary)
                 Spacer()
-                Button("Refresh") { model.reloadLibrary() }
+                Button {
+                    model.reloadLibrary()
+                } label: { Label("Oppdater", systemImage: "arrow.clockwise") }
+                    .buttonStyle(.lbGhost)
             }
             .dropDestination(for: URL.self) { urls, _ in
                 model.importURLs(urls)
@@ -269,25 +279,30 @@ public struct ScreenshotLibraryPanel: View {
             }
 
             ScrollView {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: Spacing.xs)], spacing: Spacing.xs) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: DS.Space.xs)], spacing: DS.Space.xs) {
                     ForEach(model.items) { item in
                         Button {
                             try? model.select(item)
                             renameValue = item.displayName
                         } label: {
-                            VStack(alignment: .leading, spacing: Spacing.xxs) {
+                            VStack(alignment: .leading, spacing: DS.Space.xxs) {
                                 Text(item.displayName)
-                                    .font(Typography.caption)
-                                    .foregroundStyle(Palette.ink)
+                                    .font(DS.Font.caption)
+                                    .foregroundStyle(DS.Color.ink)
                                     .lineLimit(2)
                                 Text(item.createdAt, style: .date)
-                                    .font(Typography.caption)
-                                    .foregroundStyle(Palette.mutedInk)
+                                    .font(DS.Font.caption)
+                                    .foregroundStyle(DS.Color.mutedInk)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(Spacing.xs)
-                            .background(item.id == model.selectedItem?.id ? Palette.accentSoft : Palette.raisedSurface)
-                            .overlay(RoundedRectangle(cornerRadius: Spacing.radiusSmall).stroke(Palette.border))
+                            .padding(DS.Space.xs)
+                            .background(
+                                RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous)
+                                    .fill(item.id == model.selectedItem?.id ? DS.Color.accentSoft : DS.Color.raisedSurface))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous)
+                                    .strokeBorder(item.id == model.selectedItem?.id ? DS.Color.accent : DS.Color.hairline, lineWidth: 1))
+                            .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                     }
@@ -296,41 +311,50 @@ public struct ScreenshotLibraryPanel: View {
             .frame(minHeight: 120, maxHeight: 220)
 
             if model.selectedItem != nil {
-                HStack {
-                    TextField("Name", text: $renameValue)
-                    Button("Rename") { model.renameSelected(renameValue) }
-                    Button("Delete", role: .destructive) { model.requestDeleteSelected() }
+                FormField("Navn") {
+                    HStack(spacing: DS.Space.xs) {
+                        TextField("Navn", text: $renameValue)
+                            .textFieldStyle(.lbField)
+                        Button("Gi nytt navn") { model.renameSelected(renameValue) }
+                            .buttonStyle(.lbSecondary)
+                        Button(role: .destructive) {
+                            model.requestDeleteSelected()
+                        } label: { Image(systemName: "trash") }
+                            .buttonStyle(.lbGhost)
+                            .help("Slett")
+                    }
                 }
                 annotationToolbar
                 editorSurface
-                HStack {
+                HStack(spacing: DS.Space.xs) {
                     if !model.attachTargets.isEmpty {
-                        Picker("Attach to console", selection: $model.selectedAttachTargetID) {
+                        Picker("Konsoll", selection: $model.selectedAttachTargetID) {
                             ForEach(model.attachTargets) { target in
                                 Text(target.title).tag(Optional(target.id))
                             }
                         }
+                        .labelsHidden()
                         .pickerStyle(.menu)
-                        Button("Attach path") { model.attachSelectedToConsole() }
+                        Button("Send sti") { model.attachSelectedToConsole() }
+                            .buttonStyle(.lbSecondary)
                     }
                     Spacer()
-                    Button("Export flattened PNG") { model.exportFlattenedPNG() }
+                    Button("Eksporter PNG") { model.exportFlattenedPNG() }
+                        .buttonStyle(.lbPrimary)
                 }
             } else {
-                ContentUnavailableView("No screenshot selected", systemImage: "photo.on.rectangle", description: Text("Import from file picker, drag-drop, or paste an image."))
+                EmptyStateView(symbol: "photo.on.rectangle", title: "Ingen skjermbilde valgt", message: "Importer fra fil, dra og slipp, eller lim inn et bilde.", identifier: "shots.noSelection")
             }
 
             if let message = model.statusMessage {
-                Text(message).font(Typography.caption).foregroundStyle(Palette.accent)
+                FormStatus(message, tone: .success)
             }
             if let error = model.errorMessage {
-                Text(error).font(Typography.caption).foregroundStyle(Palette.status(.error)).textSelection(.enabled)
+                FormStatus(error, tone: .error)
             }
-            Text("Images are imported from files, drag-drop, or paste. Screen capture is intentionally not included.")
-                .font(Typography.caption)
-                .foregroundStyle(Palette.mutedInk)
+            PanelFootnote("Bilder hentes fra fil, dra-og-slipp eller utklipp. Ingen skjermopptak.", symbol: "photo")
         }
-        .padding(Spacing.sm)
+        .padding(DS.Space.sm)
         .alert("Delete screenshot?", isPresented: Binding(
             get: { model.pendingDelete != nil },
             set: { if !$0 { model.cancelDelete() } }
@@ -343,19 +367,31 @@ public struct ScreenshotLibraryPanel: View {
     }
 
     private var annotationToolbar: some View {
-        HStack {
-            Picker("Tool", selection: $model.selectedTool) {
-                Text("Arrow").tag(ScreenshotAnnotationTool.arrow)
-                Text("Rectangle").tag(ScreenshotAnnotationTool.rectangle)
-                Text("Freehand").tag(ScreenshotAnnotationTool.freehand)
-                Text("Text").tag(ScreenshotAnnotationTool.text)
+        VStack(alignment: .leading, spacing: DS.Space.xs) {
+            HStack(spacing: DS.Space.xs) {
+                Picker("Verktøy", selection: $model.selectedTool) {
+                    Image(systemName: "arrow.up.right").help("Pil").tag(ScreenshotAnnotationTool.arrow)
+                    Image(systemName: "rectangle").help("Rektangel").tag(ScreenshotAnnotationTool.rectangle)
+                    Image(systemName: "scribble").help("Frihånd").tag(ScreenshotAnnotationTool.freehand)
+                    Image(systemName: "textformat").help("Tekst").tag(ScreenshotAnnotationTool.text)
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 200)
+                Spacer()
+                Button(role: .destructive) {
+                    model.clearAnnotations()
+                } label: { Label("Fjern merking", systemImage: "eraser") }
+                    .buttonStyle(.lbGhost)
             }
-            .pickerStyle(.segmented)
             if model.selectedTool == .text {
-                TextField("Text", text: $model.draftText)
-                Button("Add text") { model.addTextLayer() }
+                HStack(spacing: DS.Space.xs) {
+                    TextField("Tekst", text: $model.draftText)
+                        .textFieldStyle(.lbField)
+                    Button("Legg til") { model.addTextLayer() }
+                        .buttonStyle(.lbSecondary)
+                }
             }
-            Button("Clear annotations", role: .destructive) { model.clearAnnotations() }
         }
     }
 
@@ -370,8 +406,8 @@ public struct ScreenshotLibraryPanel: View {
             model.setPendingTextPoint(point)
         }
         .frame(minHeight: 260)
-        .background(Palette.raisedSurface)
-        .overlay(RoundedRectangle(cornerRadius: Spacing.radiusSmall).stroke(Palette.border))
+        .background(DS.Color.raisedSurface)
+        .overlay(RoundedRectangle(cornerRadius: DS.Radius.chip).stroke(DS.Color.hairline))
     }
 }
 
@@ -433,7 +469,7 @@ private struct ScreenshotAnnotationCanvas: View {
                         }
                 )
             } else {
-                ContentUnavailableView("Could not decode image", systemImage: "exclamationmark.triangle")
+                EmptyStateView(symbol: "exclamationmark.triangle", title: "Kunne ikke lese bildet", identifier: "shots.decodeFailed")
             }
         }
     }

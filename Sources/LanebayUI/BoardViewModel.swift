@@ -168,10 +168,39 @@ public final class BoardViewModel {
   /// Shown on the card when a create/start did not launch a process.
   public private(set) var consoleLaunchErrors: [UUID: String] = [:]
   public private(set) var orchestratorTranscripts: [UUID: String] = [:]
+  /// Short tasks spawned through the control API, keyed by console. Drives the "working on" label.
+  public internal(set) var agentTasks: [UUID: AgentTaskRecord] = [:]
+  /// Newest-first log of console activity, shown in the Activity panel.
+  public let activityLog = ActivityLog()
+  public var activity: ActivityFeed { activityLog.feed }
+  /// Events recorded since Aktivitet was last opened; the sidebar badge shows this.
+  public var activityUnreadCount: Int { activityLog.unreadCount }
+  /// A ⌘1–⌘5 request from the app menu. The board view consumes it and clears it.
+  public private(set) var navigationRequest: BoardNavigationRequest?
   public private(set) var orchestratorStatuses: [UUID: AgentStatus] = [:]
   public private(set) var orchestratorDrafts: [UUID: String] = [:]
   public private(set) var orchestratorApprovals: [OrchestratorApprovalRequest] = []
   public private(set) var orchestratorLinks: [OrchestratorLink] = []
+  /// A wire being dragged out of a card port, in board coordinates.
+  public var wireDrag: WireDrag?
+  /// The wire whose popover is open; Delete removes it.
+  public var selectedWireID: UUID?
+  /// When a message last passed along each wire, for the flowing-dot animation.
+  public var wirePulses: [UUID: Date] = [:]
+  @ObservationIgnored var wireRouter = WireRouter()
+  /// Cards working on a chat message or wire message: the reply entry being filled and when it started.
+  public var chatWorking: [UUID: ChatWork] = [:]
+  /// Text in the chat composer, kept here so the board and tests can see it.
+  public var chatDraft = ""
+  /// The card whose name is being edited (from the card header or the chat).
+  public var renamingNodeID: UUID?
+  /// The card whose AI and model picker is open.
+  public var providerPickerNodeID: UUID?
+  /// Runs scheduled cron jobs (see BoardViewModel+Cron).
+  var cronTask: Task<Void, Never>?
+  var cronReference = Date()
+  /// Bumped to move keyboard focus into the chat composer.
+  public var chatFocusRequest = 0
 
   @ObservationIgnored private let store: WorkspaceStore
   @ObservationIgnored private let supervisor: ProcessSupervisor
@@ -187,6 +216,7 @@ public final class BoardViewModel {
   @ObservationIgnored private var notificationState = WaitingForInputNotificationState()
   @ObservationIgnored private var isShuttingDown = false
   @ObservationIgnored private var saveTask: Task<Void, Never>?
+  @ObservationIgnored private var navigationToken = 0
   @ObservationIgnored private var dirtyWorkspaceIDs: Set<UUID> = []
   @ObservationIgnored private var loopTasks: [UUID: Task<Void, Never>] = [:]
   @ObservationIgnored private var outputBuffers: [UUID: String] = [:]
@@ -209,13 +239,21 @@ public final class BoardViewModel {
     statusSpeaker: VoiceStatusSpeaking = SilentVoiceStatusSpeaker()
   ) -> BoardViewModel {
     let support = PanelStorage.supportRoot(homeDirectory: homeDirectory)
-    return BoardViewModel(
+    let model = BoardViewModel(
       store: WorkspaceStore(rootURL: support.appendingPathComponent("workspaces", isDirectory: true)),
       usageTracker: UsageStatsTracker(store: UsageStatsStore(rootURL: support)),
       statusSpeaker: statusSpeaker,
       settings: SettingsViewModel(store: AppPreferencesStore(rootURL: support)),
       homeDirectory: homeDirectory
     )
+    let log = model.activityLog
+    log.attach(store: ActivityLogStore(fileURL: support.appendingPathComponent("activity.json")))
+    NotificationCenter.default.addObserver(
+      forName: NSApplication.willTerminateNotification, object: nil, queue: .main
+    ) { _ in
+      MainActor.assumeIsolated { log.flush() }
+    }
+    return model
   }
 
   func installSessionForTesting(_ session: ConsoleSession, id: UUID) { sessions[id] = session }
@@ -355,14 +393,14 @@ public final class BoardViewModel {
   }
 
   @discardableResult
-  public func addConsole(agentID: String, profileID: String? = nil, cwd: URL? = nil) -> UUID {
+  public func addConsole(agentID: String, profileID: String? = nil, cwd: URL? = nil, model: String? = nil) -> UUID {
     let template = availableAgentTemplates.first(where: { $0.id == agentID })
     let offset = Double((workspace?.nodes.count ?? 0) % 8) * 32
     let node = Node(
       kind: .console, agentID: agentID, cwd: cwd ?? settings.preferences.defaultWorkingDirectory ?? FileManager.default.homeDirectoryForCurrentUser,
       frame: NodeFrame(
         x: -panX / zoom + 32 + offset, y: -panY / zoom + 32 + offset, w: 480, h: 320),
-      profileID: profileID,
+      profileID: profileID, model: model,
       title: template?.title ?? "Console", notStarted: true)
     editWorkspace { $0.nodes.append(node) }
     select(node.id)
@@ -371,16 +409,94 @@ public final class BoardViewModel {
 
   /// The agent menu uses this. A new console starts immediately; a restored card stays not started until Start.
   @discardableResult
-  public func createAndStartConsole(agentID: String, profileID: String? = nil, cwd: URL? = nil) -> UUID {
-    let id = addConsole(agentID: agentID, profileID: profileID, cwd: cwd)
+  public func createAndStartConsole(agentID: String, profileID: String? = nil, cwd: URL? = nil, model: String? = nil) -> UUID {
+    let id = addConsole(agentID: agentID, profileID: profileID, cwd: cwd, model: model)
     Task { await startConsole(id) }
     return id
+  }
+
+  public func setConsoleTitle(_ id: UUID, title: String) {
+    let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !title.isEmpty else { return }
+    editNode(id) { $0.title = title }
   }
 
   public func installedLaunchExecutable(agentID: String) -> Bool {
     if agentID == OrchestratorKind.agentID { return true }
     guard let template = availableAgentTemplates.first(where: { $0.id == agentID }) else { return false }
     return executableIsInstalled(launchExecutable(for: template))
+  }
+
+  /// True when the console has no live process; such cards draw compact unless selected.
+  /// Last board width seen, used when cards are added or change size outside a layout pass.
+  @ObservationIgnored var lastViewportWidth: Double = 1200
+
+  public func consoleIsIdle(_ id: UUID) -> Bool {
+    guard let session = sessions[id] else { return true }
+    return !session.isRunning || session.isClosed
+  }
+
+  /// Lays the active workspace's consoles out in a masonry grid without overlap.
+  /// Group members stay next to each other; order is group order, then board order.
+  public func tidyBoard(viewportWidth: Double, leading: Set<UUID> = []) {
+    guard let workspace, viewportWidth.isFinite else { return }
+    let consoles = workspace.nodes.filter { $0.kind == .console }
+    guard !consoles.isEmpty else { return }
+    var ordered: [Node] = []
+    var seen = Set<UUID>()
+    for group in workspace.groups {
+      for id in group.nodeIDs where !seen.contains(id) {
+        if let node = consoles.first(where: { $0.id == id }) { ordered.append(node); seen.insert(id) }
+      }
+    }
+    // Live agents first, then stopped ones (which pack as compact strips).
+    let rest = consoles.filter { !seen.contains($0.id) }
+    // `leading` cards (just spawned, session still starting) go first.
+    ordered += rest.filter { leading.contains($0.id) }
+    let others = rest.filter { !leading.contains($0.id) }
+    ordered += others.filter { !consoleIsIdle($0.id) } + others.filter { consoleIsIdle($0.id) }
+    lastViewportWidth = viewportWidth
+    for (id, frame) in tidiedFrames(ordered, viewportWidth: viewportWidth) { moveNode(id, x: frame.x, y: frame.y) }
+    panX = 0
+    panY = 0
+  }
+
+  /// Group headers sit above their cards, so a board with groups starts lower to keep them clear of the top bar.
+  var tidyTopMargin: Double { (workspace?.groups.isEmpty ?? true) ? 32 : 64 }
+
+  private func tidiedFrames(_ ordered: [Node], viewportWidth: Double) -> [UUID: NodeFrame] {
+    let items = ordered.map { node in
+      BoardLayout.Item(id: node.id, frame: node.frame, layoutHeight: displayedFrame(node).h)
+    }
+    return BoardLayout.tidy(items, viewportWidth: viewportWidth / max(zoom, 0.25), topMargin: tidyTopMargin)
+  }
+
+  /// Tidies the board when cards were restored on top of each other.
+  public func tidyBoardIfOverlapping(viewportWidth: Double? = nil) {
+    let consoles = (workspace?.nodes ?? []).filter { $0.kind == .console }
+    let frames = consoles.map(displayedFrame)
+    let width = viewportWidth ?? lastViewportWidth
+    if !BoardLayout.overlaps(frames) {
+      // Also tidy when cards shrank to strips and left big holes (relaunch with every console stopped).
+      let tidied = tidiedFrames(consoles, viewportWidth: width).compactMap { id, frame -> NodeFrame? in
+        guard let node = consoles.first(where: { $0.id == id }) else { return nil }
+        var shown = displayedFrame(node)
+        shown.y = frame.y
+        return shown
+      }
+      guard BoardLayout.isLoose(current: frames, tidied: tidied) else { return }
+    }
+    tidyBoard(viewportWidth: width)
+  }
+
+  /// The frame as drawn: stopped consoles shrink to `BoardLayout.compactHeight`.
+  public func displayedFrame(_ node: Node) -> NodeFrame {
+    var frame = node.frame
+    if node.kind == .console {
+      frame.w = max(frame.w, BoardLayout.minimumConsoleWidth)
+      if BoardLayout.isCompact(idle: consoleIsIdle(node.id)) { frame.h = min(frame.h, BoardLayout.compactHeight) }
+    }
+    return frame
   }
 
   public func moveNode(_ id: UUID, x: Double, y: Double) {
@@ -394,8 +510,9 @@ public final class BoardViewModel {
   public func resizeNode(_ id: UUID, width: Double, height: Double) {
     guard width.isFinite, height.isFinite else { return }
     editNode(id) {
-      $0.frame.w = max(280, width)
-      $0.frame.h = max(160, height)
+      let console = $0.kind == .console
+      $0.frame.w = max(console ? BoardLayout.minimumConsoleWidth : 280, width)
+      $0.frame.h = max(console ? BoardLayout.minimumConsoleHeight : 160, height)
     }
   }
 
@@ -497,7 +614,7 @@ public final class BoardViewModel {
 
   /// Creates a console from the New terminal sheet and remembers the agent and folder.
   @discardableResult
-  public func createConsoleFromNewTerminal(agentID: String, directory: URL) -> UUID? {
+  public func createConsoleFromNewTerminal(agentID: String, directory: URL, model: String? = nil) -> UUID? {
     guard workspace != nil else {
       newTerminalError = "Open a workspace first."
       return nil
@@ -510,8 +627,8 @@ public final class BoardViewModel {
       newTerminalError = "Choose a folder that exists."
       return nil
     }
-    let id = createAndStartConsole(agentID: agentID, cwd: directory)
-    _ = settings.rememberNewTerminal(agentID: agentID, directory: directory)
+    let id = createAndStartConsole(agentID: agentID, cwd: directory, model: model)
+    _ = settings.rememberNewTerminal(agentID: agentID, directory: directory, model: model)
     newTerminalError = nil
     showingNewTerminal = false
     return id
@@ -533,6 +650,8 @@ public final class BoardViewModel {
   public func revealConsolesInViewport(width: Double, height: Double) {
     guard width >= 320, height >= 240, let id = activeWorkspaceID else { return }
     guard !viewportRevealed.contains(id) else { return }
+    lastViewportWidth = width
+    tidyBoardIfOverlapping(viewportWidth: width)
     let frames = (workspace?.nodes ?? []).filter { $0.kind == .console }.map(\.frame)
     guard !frames.isEmpty else { return }
     let pan = BoardViewport.panToReveal(
@@ -613,8 +732,14 @@ public final class BoardViewModel {
       }
     }
     console.onStatusTransition = { [weak self] oldStatus in
-      self?.handleStatusTransition(for: id, from: oldStatus)
       guard let self else { return }
+      if let status = self.sessions[id]?.status {
+        self.recordActivity(
+          .status, title: self.consoleTitle(id),
+          detail: "\(oldStatus.label()) → \(status.label())")
+      }
+      self.handleStatusTransition(for: id, from: oldStatus)
+      if let status = self.sessions[id]?.status { self.routeReplyIfFinished(id, from: oldStatus, to: status) }
       if self.sessions[id]?.status == .idle {
         self.fireLoops(trigger: .idle, target: id)
         self.consumePendingMatches(target: id)
@@ -624,7 +749,9 @@ public final class BoardViewModel {
     await console.start(
       spec: ProcessSpec(
         executable: executable,
-        arguments: template.id == "shell" ? ["-l"] : template.arguments,
+        arguments: template.id == "shell"
+          ? ["-l"]
+          : ProviderModels.launchArguments(base: template.arguments, agentID: template.id, model: node.model),
         environment: ["TERM": "xterm-256color", "COLORTERM": "truecolor"]
           .merging(processEnvironment) { _, override in override }
           .merging(profileEnvironment) { _, profile in profile },
@@ -635,6 +762,9 @@ public final class BoardViewModel {
       recordLaunchError(id, message)
     } else {
       editNode(id, workspaceID: workspaceID) { $0.notStarted = false }
+      let model = node.model?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      recordActivity(
+        .start, title: node.title, detail: model.isEmpty ? executable : "\(executable) · \(model)")
       if let workspaceID, let workspace = workspaces.first(where: { $0.id == workspaceID }) {
         usageTracker.sessionStarted(
           id: id, workspaceID: workspaceID, workspaceName: workspace.name,
@@ -659,6 +789,16 @@ public final class BoardViewModel {
     loopTasks.removeValue(forKey: id)?.cancel()
     pendingMatches.remove(id)
     editWorkspace { if let i = $0.loops.firstIndex(where: { $0.id == id }) { $0.loops[i].isEnabled = false } }
+    reconcileLoopTimers()
+  }
+
+  /// The Cron panel's toggle. Stopping keeps the old stop path; starting re-arms the timer.
+  public func setLoopEnabled(_ id: UUID, _ enabled: Bool) {
+    guard enabled else {
+      stopLoop(id)
+      return
+    }
+    editWorkspace { if let i = $0.loops.firstIndex(where: { $0.id == id }) { $0.loops[i].isEnabled = true } }
     reconcileLoopTimers()
   }
 
@@ -779,9 +919,13 @@ public final class BoardViewModel {
 
   public func closeConsole(_ id: UUID) async {
     _ = bumpConsoleEpoch(id)
+    if let closedTitle = workspace?.nodes.first(where: { $0.id == id })?.title {
+      recordActivity(.stop, title: closedTitle, detail: "closed")
+    }
     let targetLoopIDs = Set(workspaces.flatMap(\.loops).filter { $0.targetNodeID == id }.map(\.id))
     editWorkspace {
       $0.nodes.removeAll { $0.id == id }
+      $0.wires.removeAll { $0.from == id || $0.to == id }
       for index in $0.groups.indices {
         $0.groups[index].nodeIDs.removeAll { $0 == id }
         if $0.groups[index].leadNodeID == id { $0.groups[index].leadNodeID = nil }
@@ -915,12 +1059,69 @@ public final class BoardViewModel {
     }
   }
 
+  // MARK: Activity
+
+  public func recordActivity(_ kind: ActivityKind, title: String, detail: String) {
+    activityLog.append(ActivityEvent(date: loopClock(), kind: kind, title: title, detail: detail))
+  }
+
+  public func clearActivity() {
+    activityLog.clear()
+  }
+
+  public func markActivityRead() {
+    activityLog.markRead()
+  }
+
+  /// `⌘2 Orkestrering` and friends: the board opens the requested place next.
+  public func requestNavigation(_ target: BoardNavigation) {
+    navigationToken += 1
+    navigationRequest = BoardNavigationRequest(token: navigationToken, target: target)
+  }
+
+  public func clearNavigationRequest() {
+    navigationRequest = nil
+  }
+
+  /// Consoles with a live process. The sidebar's Agenter badge reads this.
+  public var runningConsoleCount: Int {
+    sessions.values.filter { $0.isRunning && !$0.isClosed }.count
+  }
+
+  /// Enabled loops (Cron badge).
+  public var activeLoopCount: Int { workspace?.loops.filter(\.isEnabled).count ?? 0 }
+
+  /// Live orchestrators (Orkestrering badge).
+  public var orchestratorCount: Int { orchestratorStatuses.count }
+
+  /// Sidebar counter for a section; nil hides the badge.
+  public func railBadge(for panel: BoardSidePanel) -> Int? {
+    switch panel {
+    case .activity: return activityUnreadCount
+    case .loops: return activeLoopCount
+    case .planner: return orchestratorCount
+    default: return nil
+    }
+  }
+
+  /// One line, at most 80 characters, for a send event's detail.
+  static func activityPreview(_ text: String) -> String {
+    let single =
+      text.replacingOccurrences(of: "\n", with: " ")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    return single.count > 80 ? String(single.prefix(80)) : single
+  }
+
   @discardableResult private func broadcast(_ text: String, to recipients: Set<UUID>) -> Bool {
     guard !recipients.isEmpty, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
     !isShuttingDown, recipients.allSatisfy({ sessions[$0]?.isRunning == true && sessions[$0]?.isClosed == false }) else {
       return false
     }
     for id in recipients { sessions[id]?.send(Data((text + "\r").utf8)) }
+    let titles = recipients.compactMap { id in workspace?.nodes.first(where: { $0.id == id })?.title }
+    recordActivity(
+      .send, title: titles.count == 1 ? titles[0] : "\(recipients.count) consoles",
+      detail: Self.activityPreview(text))
     if let workspace = workspace {
       usageTracker.recordPromptDispatch(
         workspaceID: workspace.id, workspaceName: workspace.name, count: recipients.count, at: loopClock())
@@ -970,7 +1171,7 @@ public final class BoardViewModel {
     consoleLaunchErrors[id] = message
   }
 
-  private func editNode(_ id: UUID, workspaceID: UUID? = nil, _ edit: (inout Node) -> Void) {
+  func editNode(_ id: UUID, workspaceID: UUID? = nil, _ edit: (inout Node) -> Void) {
     guard
       let workspaceIndex = workspaces.firstIndex(where: {
         $0.id == (workspaceID ?? activeWorkspaceID)
@@ -981,7 +1182,7 @@ public final class BoardViewModel {
     changed(workspaces[workspaceIndex].id)
   }
 
-  private func editWorkspace(_ edit: (inout Workspace) -> Void) {
+  func editWorkspace(_ edit: (inout Workspace) -> Void) {
     guard let index = workspaces.firstIndex(where: { $0.id == activeWorkspaceID }) else { return }
     edit(&workspaces[index])
     changed(workspaces[index].id)
@@ -1349,7 +1550,7 @@ extension BoardViewModel {
     orchestratorTranscripts[id] = current
   }
 
-  private func consoleTitle(_ id: UUID) -> String {
+  func consoleTitle(_ id: UUID) -> String {
     workspace?.nodes.first { $0.id == id }?.title ?? "Console"
   }
 }

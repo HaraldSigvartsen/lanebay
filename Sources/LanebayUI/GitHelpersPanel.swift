@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import LanebayCore
+import LanebayDesign
 import SwiftUI
 import Darwin
 
@@ -481,31 +482,43 @@ public struct GitHelpersPanel: View {
 
     public var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: Spacing.md) {
-                GroupBox("Clone repository") {
-                    VStack(alignment: .leading, spacing: Spacing.xs) {
-                        TextField("Repository URL (https:// / ssh:// / git@...)", text: $model.cloneURL)
-                        HStack {
-                            Text(model.cloneParentDirectory?.path ?? "No parent directory selected")
-                                .font(Typography.caption)
-                                .foregroundStyle(Palette.secondaryInk)
+            VStack(alignment: .leading, spacing: DS.Space.md) {
+                PanelSection("Klon repo") {
+                    FormField("Repo-URL", hint: "https://, ssh:// eller git@…") {
+                        TextField("https://github.com/org/repo.git", text: $model.cloneURL)
+                            .textFieldStyle(.lbField)
+                    }
+                    FormField("Overmappe") {
+                        HStack(spacing: DS.Space.xs) {
+                            Label(model.cloneParentDirectory?.path ?? "Ingen mappe valgt", systemImage: "folder")
+                                .font(DS.Font.caption)
+                                .foregroundStyle(DS.Color.secondaryInk)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
-                            Spacer()
-                            Button("Choose parent…") { model.chooseCloneParentDirectory() }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            Button("Velg…") { model.chooseCloneParentDirectory() }
+                                .buttonStyle(.lbSecondary)
                         }
-                        TextField("Destination folder name (optional)", text: $model.cloneFolderName)
-                        Button("Clone and open workspace") {
+                    }
+                    FormField("Mappenavn", hint: "Valgfritt. Standard er reponavnet.") {
+                        TextField("repo", text: $model.cloneFolderName)
+                            .textFieldStyle(.lbField)
+                    }
+                    HStack {
+                        Spacer()
+                        if model.isCloning { ProgressView().controlSize(.small) }
+                        Button("Klon og åpne") {
                             Task { await model.cloneRepository() }
                         }
+                        .buttonStyle(.lbPrimary)
                         .disabled(model.isCloning)
                     }
                 }
 
-                GroupBox("Commit message with approval") {
-                    VStack(alignment: .leading, spacing: Spacing.xs) {
-                        if model.projectRoots.count > 1 {
-                            Picker("Repository folder", selection: Binding(
+                PanelSection("Commit med godkjenning") {
+                    if model.projectRoots.count > 1 {
+                        FormField("Repo") {
+                            Picker("Repo", selection: Binding(
                                 get: { model.selectedRoot },
                                 set: { root in if let root { model.selectRoot(root) } }
                             )) {
@@ -513,59 +526,77 @@ public struct GitHelpersPanel: View {
                                     Text(root.lastPathComponent).tag(Optional(root))
                                 }
                             }
+                            .labelsHidden()
                             .pickerStyle(.menu)
                         }
-                        HStack {
-                            if model.isRefreshingSummary { ProgressView().controlSize(.small) }
-                            Button("Refresh staged diff summary") {
-                                Task { await model.refreshStagedDiffSummary() }
-                            }
-                        }
-                        Text(model.stagedDiffSummary.isEmpty ? "No summary loaded yet." : model.stagedDiffSummary)
-                            .font(.system(size: 12, weight: .regular, design: .monospaced))
-                            .foregroundStyle(Palette.secondaryInk)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-
-                        if !model.draftTargets.isEmpty {
-                            Picker("Draft with console", selection: Binding(
-                                get: { model.selectedDraftTargetID },
-                                set: { model.selectedDraftTargetID = $0 }
-                            )) {
-                                ForEach(model.draftTargets) { target in
-                                    Text(target.title).tag(Optional(target.id))
+                    }
+                    FormField("Staget diff") {
+                        VStack(alignment: .leading, spacing: DS.Space.xs) {
+                            Text(model.stagedDiffSummary.isEmpty ? "Ingen oppsummering lastet ennå." : model.stagedDiffSummary)
+                                .font(DS.Font.mono)
+                                .foregroundStyle(model.stagedDiffSummary.isEmpty ? DS.Color.mutedInk : DS.Color.secondaryInk)
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(DS.Space.xs)
+                                .background(
+                                    RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous)
+                                        .fill(DS.Color.raisedSurface))
+                            HStack(spacing: DS.Space.xs) {
+                                Button {
+                                    Task { await model.refreshStagedDiffSummary() }
+                                } label: {
+                                    Label("Oppdater", systemImage: "arrow.clockwise")
                                 }
+                                .buttonStyle(.lbGhost)
+                                if model.isRefreshingSummary { ProgressView().controlSize(.small) }
                             }
-                            .pickerStyle(.menu)
-                            Button("Ask selected console to draft") { model.sendDraftRequestToSelectedConsole() }
                         }
+                    }
 
+                    if !model.draftTargets.isEmpty {
+                        FormField("Utkast fra konsoll") {
+                            HStack(spacing: DS.Space.xs) {
+                                Picker("Konsoll", selection: Binding(
+                                    get: { model.selectedDraftTargetID },
+                                    set: { model.selectedDraftTargetID = $0 }
+                                )) {
+                                    ForEach(model.draftTargets) { target in
+                                        Text(target.title).tag(Optional(target.id))
+                                    }
+                                }
+                                .labelsHidden()
+                                .pickerStyle(.menu)
+                                Button("Be om utkast") { model.sendDraftRequestToSelectedConsole() }
+                                    .buttonStyle(.lbSecondary)
+                            }
+                        }
+                    }
+
+                    FormField("Commit-melding") {
                         TextEditor(text: $model.commitMessageDraft)
-                            .font(.system(size: 12, weight: .regular, design: .monospaced))
-                            .frame(minHeight: 88)
-                            .overlay(RoundedRectangle(cornerRadius: Spacing.radiusSmall).stroke(Palette.border))
+                            .lbEditor(minHeight: 96, monospaced: true)
+                    }
 
-                        HStack {
-                            if model.isCommitting { ProgressView().controlSize(.small) }
-                            Button("Approve and commit staged changes") {
-                                model.requestCommitApproval()
-                            }
-                            .disabled(model.isCommitting)
+                    HStack {
+                        Spacer()
+                        if model.isCommitting { ProgressView().controlSize(.small) }
+                        Button("Godkjenn og commit") {
+                            model.requestCommitApproval()
                         }
+                        .buttonStyle(.lbPrimary)
+                        .disabled(model.isCommitting)
                     }
                 }
 
                 if let message = model.cloneStatusMessage ?? model.commitStatusMessage {
-                    Text(message).font(Typography.caption).foregroundStyle(Palette.accent)
+                    FormStatus(message, tone: .success)
                 }
                 if let error = model.cloneErrorMessage ?? model.commitErrorMessage {
-                    Text(error).font(Typography.caption).foregroundStyle(Palette.status(.error)).textSelection(.enabled)
+                    FormStatus(error, tone: .error)
                 }
-                Text("Never auto-commit. Never push. Commit only happens after explicit approval.")
-                    .font(Typography.caption)
-                    .foregroundStyle(Palette.mutedInk)
+                PanelFootnote("Aldri auto-commit, aldri push. Commit skjer bare etter godkjenning.")
             }
-            .padding(Spacing.sm)
+            .padding(DS.Space.sm)
         }
         .alert("Approve git commit", isPresented: $model.awaitingCommitApproval) {
             Button("Cancel", role: .cancel) {}

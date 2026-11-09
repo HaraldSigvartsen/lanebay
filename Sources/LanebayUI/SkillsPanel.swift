@@ -126,43 +126,103 @@ public final class SkillsPanelModel {
 
 public struct SkillsPanel: View {
     @Bindable private var model: SkillsPanelModel
+
+    /// Shown when no SKILL.md was found. Pinned by `VerktoyPanelsTests`.
+    public static let emptyStateTitle = "Ingen skills funnet"
+
     public init(model: SkillsPanelModel) { self.model = model }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.sm) {
+        VStack(alignment: .leading, spacing: DS.Space.lg) {
             if let error = model.errorMessage {
-                Text(error).font(Typography.caption).foregroundStyle(Palette.status(.error)).textSelection(.enabled)
+                PanelSection("Feil") { errorText(error) }
             }
-            HStack(spacing: 0) {
-                List(selection: Binding(get: { model.selectedSkill?.id }, set: { id in
-                    if let skill = model.skills.first(where: { $0.id == id }) { model.select(skill) }
-                })) {
-                    ForEach(model.skills) { skill in
-                        VStack(alignment: .leading, spacing: Spacing.xxs) {
-                            Text(skill.name).font(Typography.body)
-                            Text("\(skill.source) · \(skill.description)").font(Typography.caption).foregroundStyle(Palette.secondaryInk).lineLimit(2)
-                        }.tag(Optional(skill.id))
-                    }
-                }
-                .listStyle(.sidebar).frame(minWidth: 190, idealWidth: 230)
-                Rectangle().fill(Palette.border).frame(width: 1)
-                Group {
-                    if let skill = model.selectedSkill {
-                        ScrollView {
-                            if model.renderedText != nil {
-                                MarkdownBlocks(markdown: model.source, onOpenLink: model.openLink).font(Typography.body).tint(Palette.accent).textSelection(.enabled)
-                                    .frame(maxWidth: .infinity, alignment: .leading).padding(Spacing.sm)
-                            } else { Text(model.source).font(Typography.body).textSelection(.enabled).padding(Spacing.sm) }
-                        }.accessibilityLabel("Skill \(skill.name)")
-                    } else {
-                        ContentUnavailableView("Select a skill", systemImage: "sparkles", description: Text("Skills found in project and home skill folders appear here."))
-                    }
-                }.frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            if model.skills.isEmpty {
+                EmptyStateView(
+                    symbol: "sparkles",
+                    title: Self.emptyStateTitle,
+                    message: "Skills i prosjekt- og hjemmemappene .codex/skills, .claude/skills og .agents/skills vises her.",
+                    identifier: "skills.empty")
+            } else {
+                PanelSection("Skills", fillsHeight: true) { browser }
+                    .frame(maxHeight: .infinity)
             }
-            .overlay { RoundedRectangle(cornerRadius: Spacing.radiusSmall).stroke(Palette.border, lineWidth: 1) }
-            .clipShape(RoundedRectangle(cornerRadius: Spacing.radiusSmall))
-            Text("Read-only · Local skill files · 1 MB limit").font(Typography.caption).foregroundStyle(Palette.mutedInk)
+
+            Text("Kun lesing · Lokale skill-filer · Maks 1 MB")
+                .font(DS.Font.caption)
+                .foregroundStyle(DS.Color.mutedInk)
         }
-        .padding(Spacing.sm).background(Palette.surface)
+        .padding(DS.Space.lg)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var browser: some View {
+        HStack(spacing: 0) {
+            List(selection: Binding(get: { model.selectedSkill?.id }, set: { id in
+                if let skill = model.skills.first(where: { $0.id == id }) { model.select(skill) }
+            })) {
+                ForEach(model.skills) { skill in
+                    let isSelected = model.selectedSkill?.id == skill.id
+                    PanelRow(isSelected: isSelected) {
+                        VStack(alignment: .leading, spacing: DS.Space.xxs) {
+                            Text(skill.name)
+                                .font(DS.Font.body)
+                                .foregroundStyle(isSelected ? DS.Color.accentInk : DS.Color.ink)
+                                .lineLimit(1)
+                            Text("\(skill.source) · \(skill.description)")
+                                .font(DS.Font.caption)
+                                .foregroundStyle(DS.Color.secondaryInk)
+                                .lineLimit(2)
+                        }
+                    }
+                    .tag(Optional(skill.id))
+                }
+            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .frame(minWidth: 190, idealWidth: 230)
+            .accessibilityIdentifier("skills.list")
+
+            Rectangle().fill(DS.Color.hairline).frame(width: 1)
+
+            Group {
+                if let skill = model.selectedSkill {
+                    ScrollView {
+                        Group {
+                            if model.renderedText != nil {
+                                MarkdownBlocks(markdown: model.source, onOpenLink: model.openLink)
+                                    .font(DS.Font.body)
+                                    .tint(DS.Color.accent)
+                                    .textSelection(.enabled)
+                            } else {
+                                Text(model.source)
+                                    .font(DS.Font.body)
+                                    .foregroundStyle(DS.Color.ink)
+                                    .textSelection(.enabled)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(DS.Space.sm)
+                    }
+                    .accessibilityLabel("Skill \(skill.name)")
+                    .accessibilityIdentifier("skills.text")
+                } else {
+                    EmptyStateView(
+                        symbol: "sparkles",
+                        title: "Select a skill",
+                        message: "Skills found in project and home skill folders appear here.",
+                        identifier: "skills.noSelection")
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private func errorText(_ error: String) -> some View {
+        Text(error)
+            .font(DS.Font.caption)
+            .foregroundStyle(DS.Color.status(.error))
+            .textSelection(.enabled)
     }
 }

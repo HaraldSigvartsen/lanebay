@@ -1,5 +1,6 @@
 import Foundation
 import LanebayCore
+import LanebayDesign
 import SwiftUI
 import Darwin
 
@@ -411,89 +412,136 @@ public struct GitHubPanel: View {
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.sm) {
-            if model.projectRoots.count > 1 {
-                Picker("Project folder", selection: Binding(
-                    get: { model.selectedRoot },
-                    set: { root in
-                        if let root {
-                            model.selectRoot(root)
-                            Task { await model.refresh() }
+        ScrollView {
+        VStack(alignment: .leading, spacing: DS.Space.md) {
+            PanelSection("Repo") {
+                HStack(spacing: DS.Space.xs) {
+                    Image(systemName: "chevron.left.forwardslash.chevron.right")
+                        .foregroundStyle(DS.Color.accentInk)
+                    Text(model.repositoryName.isEmpty ? "Repo ikke lastet" : model.repositoryName)
+                        .font(DS.Font.bodyEmphasis)
+                        .foregroundStyle(DS.Color.ink)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer()
+                    if model.isLoading { ProgressView().controlSize(.small) }
+                    Button {
+                        Task { await model.refresh() }
+                    } label: {
+                        Label("Oppdater", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.lbGhost)
+                }
+                if model.projectRoots.count > 1 {
+                    FormField("Prosjektmappe") {
+                        Picker("Prosjektmappe", selection: Binding(
+                            get: { model.selectedRoot },
+                            set: { root in
+                                if let root {
+                                    model.selectRoot(root)
+                                    Task { await model.refresh() }
+                                }
+                            }
+                        )) {
+                            ForEach(model.projectRoots, id: \.path) { root in
+                                Text(root.lastPathComponent).tag(Optional(root))
+                            }
                         }
-                    }
-                )) {
-                    ForEach(model.projectRoots, id: \.path) { root in
-                        Text(root.lastPathComponent).tag(Optional(root))
+                        .labelsHidden()
+                        .pickerStyle(.menu)
                     }
                 }
-                .pickerStyle(.menu)
-            }
-            HStack {
-                if model.isLoading {
-                    ProgressView().controlSize(.small)
+                if model.emptyStateMessage == nil {
+                    HStack(spacing: DS.Space.xs) {
+                        Label(model.currentBranch, systemImage: "arrow.triangle.branch")
+                            .font(DS.Font.caption)
+                            .foregroundStyle(DS.Color.secondaryInk)
+                            .lineLimit(1)
+                        Spacer()
+                        StatusPill(kind: ciKind, label: "CI: \(model.checkStatus)")
+                    }
                 }
-                Text(model.repositoryName.isEmpty ? "Repository not loaded" : model.repositoryName)
-                    .font(Typography.bodyEmphasis)
-                    .lineLimit(1)
-                Spacer()
-                Button("Refresh") { Task { await model.refresh() } }
             }
 
             if let message = model.emptyStateMessage {
-                ContentUnavailableView("GitHub unavailable", systemImage: "tray", description: Text(message))
+                EmptyStateView(symbol: "tray", title: "GitHub er ikke tilgjengelig", message: message, identifier: "github.unavailable")
             } else {
-                Group {
-                    Text("Current branch: \(model.currentBranch)").font(Typography.caption)
-                    Text("CI checks: \(model.checkStatus)").font(Typography.caption).foregroundStyle(Palette.secondaryInk)
-                }
-
-                GroupBox("Open Pull Requests") {
+                PanelSection("Åpne pull requests") {
                     if model.openPullRequests.isEmpty {
-                        Text("No open pull requests found.")
-                            .font(Typography.caption)
-                            .foregroundStyle(Palette.mutedInk)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                        emptyLine("Ingen åpne pull requests.")
                     } else {
-                        VStack(alignment: .leading, spacing: Spacing.xs) {
+                        VStack(alignment: .leading, spacing: DS.Space.xxs) {
                             ForEach(model.openPullRequests) { pr in
-                                VStack(alignment: .leading, spacing: Spacing.xxs) {
-                                    Text("#\(pr.number) \(pr.title)").font(Typography.bodyEmphasis)
-                                    Text("\(pr.branch) · \(pr.checksSummary)").font(Typography.caption).foregroundStyle(Palette.secondaryInk)
-                                    Link(pr.url.absoluteString, destination: pr.url).font(Typography.caption)
+                                Link(destination: pr.url) {
+                                    PanelRow {
+                                        VStack(alignment: .leading, spacing: DS.Space.xxs) {
+                                            Text("#\(pr.number)  \(pr.title)")
+                                                .font(DS.Font.bodyEmphasis)
+                                                .foregroundStyle(DS.Color.ink)
+                                                .lineLimit(2)
+                                            Text("\(pr.branch) · \(pr.checksSummary)")
+                                                .font(DS.Font.caption)
+                                                .foregroundStyle(DS.Color.secondaryInk)
+                                                .lineLimit(1)
+                                        }
+                                    }
                                 }
+                                .buttonStyle(.plain)
+                                .help(pr.url.absoluteString)
                             }
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
 
-                GroupBox("Recent Issues") {
+                PanelSection("Siste issues") {
                     if model.recentIssues.isEmpty {
-                        Text("No recent issues found.")
-                            .font(Typography.caption)
-                            .foregroundStyle(Palette.mutedInk)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                        emptyLine("Ingen nye issues.")
                     } else {
-                        VStack(alignment: .leading, spacing: Spacing.xs) {
+                        VStack(alignment: .leading, spacing: DS.Space.xxs) {
                             ForEach(model.recentIssues) { issue in
-                                VStack(alignment: .leading, spacing: Spacing.xxs) {
-                                    Text("#\(issue.number) \(issue.title)").font(Typography.body)
-                                    Link(issue.url.absoluteString, destination: issue.url).font(Typography.caption)
+                                Link(destination: issue.url) {
+                                    PanelRow {
+                                        HStack(spacing: DS.Space.xs) {
+                                            Text("#\(issue.number)")
+                                                .font(DS.Font.mono)
+                                                .foregroundStyle(DS.Color.mutedInk)
+                                            Text(issue.title)
+                                                .font(DS.Font.body)
+                                                .foregroundStyle(DS.Color.ink)
+                                                .lineLimit(2)
+                                        }
+                                    }
                                 }
+                                .buttonStyle(.plain)
+                                .help(issue.url.absoluteString)
                             }
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
             }
 
             if let error = model.errorMessage {
-                Text(error).font(Typography.caption).foregroundStyle(Palette.status(.error)).textSelection(.enabled)
+                FormStatus(error, tone: .error)
             }
-            Text("Read-only · Uses local `gh` CLI · No token storage").font(Typography.caption).foregroundStyle(Palette.mutedInk)
+            PanelFootnote("Kun lesing · bruker lokal gh · lagrer ingen token")
         }
-        .padding(Spacing.sm)
-        .background(Palette.surface)
+        .padding(DS.Space.sm)
+        }
         .task { await model.refresh() }
+    }
+
+    private var ciKind: StatusKind {
+        let status = model.checkStatus.lowercased()
+        if status.contains("fail") || status.contains("error") { return .error }
+        if status.contains("pend") || status.contains("progress") || status.contains("running") { return .running }
+        if status.contains("pass") || status.contains("success") || status.contains("ok") { return .done }
+        return .stopped
+    }
+
+    private func emptyLine(_ text: String) -> some View {
+        Text(text)
+            .font(DS.Font.caption)
+            .foregroundStyle(DS.Color.mutedInk)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

@@ -24,16 +24,21 @@ public struct NewTerminalDirectory: Equatable, Sendable, Identifiable {
 
 /// One-step terminal setup: a short agent list, a remembered folder, and Return to create.
 public struct NewTerminalDraft: Equatable, Sendable {
-    public static let featuredAgentIDs = ["shell", "orchestrator", "codex", "claude", "cursor-agent"]
+    public static let featuredAgentIDs = ["shell", "orchestrator", "freebuff", "opencode", "codex", "claude", "cursor-agent"]
     public static let recentDirectoryLimit = 8
 
     public var agents: [NewTerminalAgent]
     public var selectedAgentID: String
+    /// Empty means the CLI default model.
+    public var selectedModel: String
+    public var lastModels: [String: String]
     public var directories: [NewTerminalDirectory]
     public var selectedDirectoryPath: String
 
     public var featuredAgents: [NewTerminalAgent] { agents.filter { !$0.isCustom } }
     public var customAgents: [NewTerminalAgent] { agents.filter(\.isCustom) }
+    public var modelSuggestions: [String] { ProviderModels.suggestions(for: selectedAgentID) }
+    public var supportsModel: Bool { ProviderModels.supportsModel(selectedAgentID) }
 
     public var selectedDirectory: URL? {
         guard selectedDirectoryPath.hasPrefix("/") else { return nil }
@@ -44,10 +49,14 @@ public struct NewTerminalDraft: Equatable, Sendable {
         agents: [NewTerminalAgent],
         selectedAgentID: String,
         directories: [NewTerminalDirectory],
-        selectedDirectoryPath: String
+        selectedDirectoryPath: String,
+        selectedModel: String = "",
+        lastModels: [String: String] = [:]
     ) {
         self.agents = agents
         self.selectedAgentID = selectedAgentID
+        self.selectedModel = selectedModel
+        self.lastModels = lastModels
         self.directories = directories
         self.selectedDirectoryPath = selectedDirectoryPath
     }
@@ -81,7 +90,8 @@ public struct NewTerminalDraft: Equatable, Sendable {
         recentDirectories: [URL],
         defaultDirectory: URL?,
         homeDirectory: URL,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        lastModels: [String: String] = [:]
     ) -> NewTerminalDraft {
         let agents = agents(knownAgents: knownAgents, customExecutables: customExecutables)
         let selectedAgentID: String
@@ -108,7 +118,9 @@ public struct NewTerminalDraft: Equatable, Sendable {
             agents: agents,
             selectedAgentID: selectedAgentID,
             directories: directories.map { NewTerminalDirectory(path: $0.path) },
-            selectedDirectoryPath: directories.first?.path ?? ""
+            selectedDirectoryPath: directories.first?.path ?? "",
+            selectedModel: lastModels[selectedAgentID] ?? "",
+            lastModels: lastModels
         )
     }
 
@@ -116,6 +128,13 @@ public struct NewTerminalDraft: Equatable, Sendable {
         guard agents.contains(where: { $0.id == id }) else { return self }
         var copy = self
         copy.selectedAgentID = id
+        copy.selectedModel = lastModels[id] ?? ""
+        return copy
+    }
+
+    public func selectingModel(_ model: String) -> NewTerminalDraft {
+        var copy = self
+        copy.selectedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
         return copy
     }
 

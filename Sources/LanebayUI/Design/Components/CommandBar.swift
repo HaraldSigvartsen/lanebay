@@ -14,7 +14,7 @@ public struct CommandBar: View {
     private let voiceStatus: String?
     private let voiceError: String?
 
-    public init(text: Binding<String>, placeholder: String = "Command your agents…", destination: String? = nil, canSubmit: Bool = true, hasIdleRecipients: Bool = false, onBroadcastToIdle: ((String) -> Bool)? = nil, isVoiceRecording: Bool = false, voiceStatus: String? = nil, voiceError: String? = nil, onPushToTalkPressChanged: ((Bool) -> Void)? = nil, onSubmit: @escaping (String) -> Void) {
+    public init(text: Binding<String>, placeholder: String = "Gi agentene en oppgave…", destination: String? = nil, canSubmit: Bool = true, hasIdleRecipients: Bool = false, onBroadcastToIdle: ((String) -> Bool)? = nil, isVoiceRecording: Bool = false, voiceStatus: String? = nil, voiceError: String? = nil, onPushToTalkPressChanged: ((Bool) -> Void)? = nil, onSubmit: @escaping (String) -> Void) {
         _text = text
         self.placeholder = placeholder
         self.onSubmit = onSubmit
@@ -31,13 +31,15 @@ public struct CommandBar: View {
     public var body: some View {
         HStack(spacing: Spacing.sm) {
             Icon.command.image.foregroundStyle(Palette.accent)
-            if let destination { Text(destination).font(Typography.caption).foregroundStyle(Palette.accent).lineLimit(1).padding(.horizontal, Spacing.xs).padding(.vertical, Spacing.xxs).background(Palette.accentSoft, in: RoundedRectangle(cornerRadius: Spacing.radiusSmall)) }
+            if let destination { Text(destination).font(Typography.caption).foregroundStyle(Palette.accentInk).lineLimit(1).padding(.horizontal, Spacing.sm).padding(.vertical, Spacing.xxs).background(Palette.accentSoft, in: Capsule()) }
             TextField(placeholder, text: $text)
                 .textFieldStyle(.plain).font(Typography.body).foregroundStyle(Palette.ink)
                 .focused($isCommandFieldFocused)
                 .onSubmit(submit)
-            Button(action: submit) { Icon.send.image.foregroundStyle(Palette.surface).frame(width: 28, height: 28).contentShape(Rectangle()).background(Palette.accent, in: RoundedRectangle(cornerRadius: Spacing.radiusSmall)) }
+            Button(action: submit) { Icon.send.image.foregroundStyle(.white).frame(width: 30, height: 30).contentShape(Rectangle()).background(Palette.accentGradient, in: RoundedRectangle(cornerRadius: Spacing.radiusSmall + 2)) }
                 .buttonStyle(.plain).disabled(!isSubmittable).opacity(isSubmittable ? 1 : 0.5)
+                .scaleEffect(isSubmittable ? 1 : 0.94)
+                .animation(.spring(response: 0.35, dampingFraction: 0.85), value: isSubmittable)
                 .accessibilityLabel("Send command")
             if let onBroadcastToIdle {
                 Button { if onBroadcastToIdle(text) { text = "" } } label: { Image(systemName: "arrow.trianglehead.2.clockwise.rotate.90") }
@@ -47,7 +49,7 @@ public struct CommandBar: View {
             if let onPushToTalkPressChanged {
                 Image(systemName: isVoiceRecording ? "waveform.circle.fill" : "mic.circle")
                     .font(.title3)
-                    .foregroundStyle(isVoiceRecording ? Palette.accent : Palette.secondaryInk)
+                    .foregroundStyle(isVoiceRecording ? Palette.accentHot : Palette.secondaryInk)
                     .help("Hold to talk (Option+Space)")
                     .accessibilityLabel("Push to talk")
                     .onLongPressGesture(minimumDuration: .infinity, pressing: { pressing in
@@ -55,17 +57,18 @@ public struct CommandBar: View {
                     }, perform: {})
             }
         }
-        .padding(.horizontal, Spacing.md).frame(height: 48)
-        .background(Palette.surface, in: RoundedRectangle(cornerRadius: Spacing.radiusMedium))
-        .overlay(RoundedRectangle(cornerRadius: Spacing.radiusMedium).stroke(Palette.border, lineWidth: 1))
+        .padding(.horizontal, Spacing.md).frame(height: 52)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: Spacing.radiusLarge))
+        .overlay(RoundedRectangle(cornerRadius: Spacing.radiusLarge).stroke(Palette.border.opacity(0.6), lineWidth: 1))
         .overlay {
             if isCommandFieldFocused {
-                RoundedRectangle(cornerRadius: Spacing.radiusMedium)
-                    .stroke(Palette.focus, lineWidth: 2)
+                RoundedRectangle(cornerRadius: Spacing.radiusLarge)
+                    .stroke(Palette.accent, lineWidth: 2)
                     .padding(1)
                     .allowsHitTesting(false)
             }
         }
+        .animation(.spring(response: 0.35, dampingFraction: 0.85), value: isCommandFieldFocused)
         .shadow(color: Spacing.elevationRaised.color, radius: Spacing.elevationRaised.radius, y: Spacing.elevationRaised.y)
         .overlay(alignment: .bottomLeading) {
             if let voiceError {

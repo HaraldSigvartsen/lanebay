@@ -98,58 +98,112 @@ public final class MemoryPanelModel {
 
 public struct MemoryPanel: View {
     @Bindable private var model: MemoryPanelModel
+
+    /// Shown when neither project nor user memory files exist. Pinned by `VerktoyPanelsTests`.
+    public static let emptyStateTitle = "Ingen minner ennå"
+
     public init(model: MemoryPanelModel) { self.model = model }
 
+    private var hasDocuments: Bool { !model.projectDocuments.isEmpty || !model.userDocuments.isEmpty }
+
     public var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.sm) {
+        VStack(alignment: .leading, spacing: DS.Space.lg) {
             if let error = model.errorMessage {
-                Text(error).font(Typography.caption).foregroundStyle(Palette.status(.error)).textSelection(.enabled)
+                PanelSection("Feil") { errorText(error) }
             }
-            HStack(spacing: 0) {
-                List(selection: Binding(get: { model.selectedDocument?.id }, set: { id in
-                    if let document = (model.projectDocuments + model.userDocuments).first(where: { $0.id == id }) {
-                        model.select(document)
-                    }
-                })) {
-                    if !model.projectDocuments.isEmpty {
-                        Section("Project") {
-                            ForEach(model.projectDocuments) { document in
-                                Text(document.title).font(Typography.caption).tag(Optional(document.id))
-                            }
-                        }
-                    }
-                    if !model.userDocuments.isEmpty {
-                        Section("User") {
-                            ForEach(model.userDocuments) { document in
-                                Text(document.title).font(Typography.caption).tag(Optional(document.id))
-                            }
+
+            if hasDocuments {
+                PanelSection("Minner", fillsHeight: true) { browser }
+                    .frame(maxHeight: .infinity)
+            } else {
+                EmptyStateView(
+                    symbol: "brain",
+                    title: Self.emptyStateTitle,
+                    message: "Prosjekt- og brukerfiler med agentinstrukser vises her når de finnes.",
+                    identifier: "memory.empty")
+            }
+
+            Text("Kun lesing · Lokale minnefiler · Maks 1 MB")
+                .font(DS.Font.caption)
+                .foregroundStyle(DS.Color.mutedInk)
+        }
+        .padding(DS.Space.lg)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var browser: some View {
+        HStack(spacing: 0) {
+            List(selection: Binding(get: { model.selectedDocument?.id }, set: { id in
+                if let document = (model.projectDocuments + model.userDocuments).first(where: { $0.id == id }) {
+                    model.select(document)
+                }
+            })) {
+                if !model.projectDocuments.isEmpty {
+                    Section("Project") {
+                        ForEach(model.projectDocuments) { document in
+                            memoryRow(document)
                         }
                     }
                 }
-                .listStyle(.sidebar).frame(minWidth: 180, idealWidth: 220)
-                Rectangle().fill(Palette.border).frame(width: 1)
-                Group {
-                    if let document = model.selectedDocument {
-                        ScrollView {
-                            Group {
-                                if let rendered = model.renderedText {
-                                    Text(rendered).font(Typography.body).tint(Palette.accent)
-                                } else {
-                                    Text(model.source).font(Typography.body)
-                                }
-                            }
-                            .foregroundStyle(Palette.ink).textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading).padding(Spacing.sm)
-                        }.accessibilityLabel("Memory document \(document.relativePath)")
-                    } else {
-                        ContentUnavailableView("No memory files found", systemImage: "brain", description: Text("Project and user agent instruction files appear here when present."))
+                if !model.userDocuments.isEmpty {
+                    Section("User") {
+                        ForEach(model.userDocuments) { document in
+                            memoryRow(document)
+                        }
                     }
-                }.frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
             }
-            .overlay { RoundedRectangle(cornerRadius: Spacing.radiusSmall).stroke(Palette.border, lineWidth: 1) }
-            .clipShape(RoundedRectangle(cornerRadius: Spacing.radiusSmall))
-            Text("Read-only · Local memory files · 1 MB limit").font(Typography.caption).foregroundStyle(Palette.mutedInk)
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .frame(minWidth: 180, idealWidth: 220)
+            .accessibilityIdentifier("memory.list")
+
+            Rectangle().fill(DS.Color.hairline).frame(width: 1)
+
+            Group {
+                if let document = model.selectedDocument {
+                    ScrollView {
+                        Group {
+                            if let rendered = model.renderedText {
+                                Text(rendered).font(DS.Font.body).tint(DS.Color.accent)
+                            } else {
+                                Text(model.source).font(DS.Font.body)
+                            }
+                        }
+                        .foregroundStyle(DS.Color.ink)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(DS.Space.sm)
+                    }
+                    .accessibilityLabel("Memory document \(document.relativePath)")
+                    .accessibilityIdentifier("memory.text")
+                } else {
+                    EmptyStateView(
+                        symbol: "brain",
+                        title: Self.emptyStateTitle,
+                        message: "Velg en minnefil for å lese den.",
+                        identifier: "memory.noSelection")
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .padding(Spacing.sm).background(Palette.surface)
+    }
+
+    private func memoryRow(_ document: AgentMemoryDocument) -> some View {
+        let isSelected = model.selectedDocument?.id == document.id
+        return PanelRow(isSelected: isSelected) {
+            Text(document.title)
+                .font(DS.Font.caption)
+                .foregroundStyle(isSelected ? DS.Color.accentInk : DS.Color.ink)
+                .lineLimit(2)
+        }
+        .tag(Optional(document.id))
+    }
+
+    private func errorText(_ error: String) -> some View {
+        Text(error)
+            .font(DS.Font.caption)
+            .foregroundStyle(DS.Color.status(.error))
+            .textSelection(.enabled)
     }
 }

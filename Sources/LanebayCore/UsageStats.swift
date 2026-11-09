@@ -251,9 +251,9 @@ public final class UsageStatsTracker {
     }
 
     private let store: UsageStatsStore
+    private let calendar: Calendar
     private var document: UsageStatsDocument
     private var sessions: [UUID: SessionState] = [:]
-    private let calendar = Calendar(identifier: .gregorian)
     private let dayFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.calendar = Calendar(identifier: .gregorian)
@@ -263,8 +263,9 @@ public final class UsageStatsTracker {
         return formatter
     }()
 
-    public init(store: UsageStatsStore = UsageStatsStore()) {
+    public init(store: UsageStatsStore = UsageStatsStore(), calendar: Calendar = Calendar(identifier: .gregorian)) {
         self.store = store
+        self.calendar = calendar
         self.document = (try? store.load()) ?? UsageStatsDocument()
     }
 
@@ -339,20 +340,32 @@ public final class UsageStatsTracker {
         guard end > state.lastStatusAt else { return }
         var cursor = state.lastStatusAt
         while cursor < end {
-            let nextDay = calendar.startOfDay(for: cursor).addingTimeInterval(86_400)
+            let dayStart = calendar.startOfDay(for: cursor)
+            // A fixed 86_400-second step is shorter than a 25-hour fall-back day, so that
+            // boundary can land at or before the cursor and the loop never advances. Adding a
+            // calendar day yields the next local midnight, which is always past the cursor.
+            let nextDay = calendar.date(byAdding: .day, value: 1, to: dayStart)
+                ?? dayStart.addingTimeInterval(86_400)
             let segmentEnd = min(end, nextDay)
-            let seconds = segmentEnd.timeIntervalSince(cursor)
-            let day = dayFormatter.string(from: cursor)
-            var workspace = workspaceDay(day: day, workspaceID: state.workspaceID, workspaceName: state.workspaceName)
-            switch normalized(state.lastStatus) {
-            case "running": workspace.runningSeconds += seconds
-            case "idle": workspace.idleSeconds += seconds
-            case "waitingForInput": workspace.waitingForInputSeconds += seconds
-            default: break
+            guard segmentEnd > cursor else {
+                book(state: state, day: dayFormatter.string(from: cursor), seconds: end.timeIntervalSince(cursor))
+                return
             }
-            setWorkspaceDay(workspace, day: day)
+            book(state: state, day: dayFormatter.string(from: cursor), seconds: segmentEnd.timeIntervalSince(cursor))
             cursor = segmentEnd
         }
+    }
+
+    private func book(state: SessionState, day: String, seconds: Double) {
+        guard seconds > 0 else { return }
+        var workspace = workspaceDay(day: day, workspaceID: state.workspaceID, workspaceName: state.workspaceName)
+        switch normalized(state.lastStatus) {
+        case "running": workspace.runningSeconds += seconds
+        case "idle": workspace.idleSeconds += seconds
+        case "waitingForInput": workspace.waitingForInputSeconds += seconds
+        default: break
+        }
+        setWorkspaceDay(workspace, day: day)
     }
 
     private func normalized(_ status: String) -> String {

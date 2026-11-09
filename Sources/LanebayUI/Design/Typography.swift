@@ -1,12 +1,13 @@
 import AppKit
 import SwiftUI
 
+/// Forwarded to the shared `LanebayDesign` type scale.
 public enum Typography {
-    public static let caption = Font.system(size: 11, weight: .medium, design: .default)
-    public static let body = Font.system(size: 13, weight: .regular, design: .default)
-    public static let bodyEmphasis = Font.system(size: 13, weight: .semibold, design: .default)
-    public static let title = Font.system(size: 16, weight: .semibold, design: .default)
-    public static let display = Font.system(size: 24, weight: .semibold, design: .default)
-    public static var terminalNSFont: NSFont { .monospacedSystemFont(ofSize: 12, weight: .regular) }
-    public static let terminal = Font(terminalNSFont)
+    public static let caption = DS.Font.caption
+    public static let body = DS.Font.body
+    public static let bodyEmphasis = DS.Font.bodyEmphasis
+    public static let title = DS.Font.title
+    public static let display = DS.Font.display
+    public static var terminalNSFont: NSFont { DS.Font.monoNSFont }
+    public static var terminal: Font { DS.Font.mono }
 }

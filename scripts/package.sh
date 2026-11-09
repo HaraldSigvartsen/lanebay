@@ -24,6 +24,8 @@ mkdir -p "$DIST_DIR"
 rm -rf "$APP_BUNDLE" "$DIST_DIR/$APP_NAME.dmg"
 mkdir -p "$CONTENTS_DIR/MacOS" "$CONTENTS_DIR/Resources" "$FRAMEWORKS_DIR"
 cp "$ROOT_DIR/.build/release/$APP_NAME" "$CONTENTS_DIR/MacOS/$APP_NAME"
+# Control CLI; link it as `lanebay` on PATH (see scripts/install-cli.sh).
+cp "$ROOT_DIR/.build/release/lanebayctl" "$CONTENTS_DIR/MacOS/lanebayctl"
 
 cat > "$CONTENTS_DIR/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

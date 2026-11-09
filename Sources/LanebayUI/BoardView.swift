@@ -11,7 +11,10 @@ public struct BoardView: View {
   @State private var groupName = ""
   @State private var showingGroupPrompt = false
   @State private var showingGroups = false
+  @State private var boardViewportWidth: Double = 1000
   @State private var openPanel: BoardSidePanel?
+  /// The card under the pointer, so its wire ports can show.
+  @State private var hoveredCard: UUID?
   @State private var docsPanelModel: DocsPanelModel
   @State private var codePanelModel: CodePanelModel
   @State private var markdownPanelModel: MarkdownPanelModel
@@ -27,6 +30,7 @@ public struct BoardView: View {
   @State private var plannerPanelModel: PlannerPanelModel
   @State private var voiceModel: VoiceCommandModel
   @State private var voiceHotkeyMonitor = PushToTalkHotkeyMonitor()
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   private let presetsStore: PresetsStore
   private let chatStore: ChatTranscriptStore
   let memoryHomeRoot: URL
@@ -103,36 +107,19 @@ public struct BoardView: View {
   public var body: some View {
     HStack(spacing: 0) {
       BoardRail(
-        panels: [
-          BoardRailPanel(id: "board", icon: .workspace, title: "Board", isSelected: openPanel == nil) {
-            openPanel = nil
-          },
-        ] + BoardSidePanel.railOrder.map { panel in
-          BoardRailPanel(id: panel.rawValue, icon: panel.icon, title: panel.railTitle, isSelected: openPanel == panel) {
-            togglePanel(panel)
-          }
-        },
-        canCreateGroup: model.canCreateGroup,
-        canManageGroups: model.workspace?.groups.isEmpty == false,
-        onCreateGroup: { showingGroupPrompt = true },
-        onManageGroups: { showingGroups = true }
-      ) {
-        AXActionButton(
-          title: "Console",
-          systemImage: Icon.add.rawValue,
-          identifier: "rail.addConsole",
-          accessibilityLabel: "Add console",
-          enabled: model.workspace != nil,
-          highlighted: showingAgentPicker,
-          compact: true
-        ) {
-          showingAgentPicker.toggle()
-        }
-        .frame(width: BoardRailMetrics.buttonWidth, height: BoardRailMetrics.buttonHeight)
+        workspaceName: model.workspace?.name,
+        panels: [boardPanel] + railPanels
+      )
+      .zIndex(3)
+      Rectangle().fill(Palette.border).frame(width: 1).zIndex(3)
+      if model.workspace != nil, model.chatPanelOpen {
+        BoardChatPanel(model: model)
+          .zIndex(3)
+          .transition(.move(edge: .leading).combined(with: .opacity))
+        Rectangle().fill(Palette.border).frame(width: 1).zIndex(3)
       }
-      Rectangle().fill(Palette.border).frame(width: 1)
       VStack(spacing: 0) {
-        tabs
+        tabs.zIndex(2)
         if let message = model.errorMessage {
           HStack(spacing: Spacing.xs) {
             Icon.warning.image.foregroundStyle(Palette.status(.error))
@@ -161,10 +148,32 @@ public struct BoardView: View {
           .frame(maxWidth: .infinity, alignment: .leading)
           .background(Palette.canvas)
         }
-        HStack(spacing: 0) {
-          canvas
-          if let openPanel { sidePanel(openPanel) }
-        }
+        canvas
+          .overlay(alignment: .topLeading) {
+            if model.workspace != nil, !model.chatPanelOpen {
+              Button {
+                withAnimation(.easeOut(duration: 0.22)) { model.setChatPanel(open: true) }
+              } label: {
+                Label("Chat", systemImage: "bubble.left.and.text.bubble.right")
+                  .font(Typography.caption.weight(.semibold))
+                  .padding(.horizontal, Spacing.sm)
+                  .frame(height: 28)
+                  .background(Palette.surface, in: Capsule())
+                  .overlay(Capsule().stroke(Palette.border))
+              }
+              .buttonStyle(.plain)
+              .foregroundStyle(Palette.ink)
+              .padding(Spacing.sm)
+              .help("Vis chat (⌘⇧C)")
+            }
+          }
+          .background {
+            Button("") { withAnimation(.easeOut(duration: 0.22)) { model.setChatPanel(open: !model.chatPanelOpen) } }
+              .keyboardShortcut("c", modifiers: [.command, .shift])
+              .opacity(0).allowsHitTesting(false)
+          }
+          .onChange(of: model.consoleNodes.map(\.title)) { _, _ in model.makeConsoleNamesUnique() }
+        if !model.chatPanelOpen || model.workspace == nil {
         CommandBar(
           text: $command, destination: model.commandDestination,
           canSubmit: model.canSendCommand,
@@ -181,9 +190,19 @@ public struct BoardView: View {
         }
         .padding(Spacing.sm)
         .background(Palette.canvas)
+        }
       }
     }
     .background(Palette.canvas)
+    .overlay {
+      DialogOverlay(
+        isPresented: openPanel != nil,
+        preferredWidth: openPanel?.width ?? DialogLayout.minWidth,
+        onClose: { openPanel = nil }
+      ) {
+        if let panel = openPanel { dialogPanel(panel).id(panel) }
+      }
+    }
     .alert(
       "Rename workspace",
       isPresented: Binding(get: { renamingID != nil }, set: { if !$0 { renamingID = nil } })
@@ -204,6 +223,13 @@ public struct BoardView: View {
       }
     } message: { Text("Selected consoles will be added to the group.") }
     .sheet(isPresented: $showingGroups) { GroupManagementSheet(model: model) }
+    .sheet(item: Binding(
+      get: { model.providerPickerNodeID.map(ProviderPickerTarget.init) },
+      set: { model.providerPickerNodeID = $0?.id })
+    ) { target in
+      ProviderPickerSheet(model: model, nodeID: target.id)
+        .presentationBackground(.clear)
+    }
     .sheet(isPresented: $model.showingNewTerminal) {
       NewTerminalSheet(model: model)
     }
@@ -212,6 +238,11 @@ public struct BoardView: View {
       showingGroups = false
       showingAgentPicker = false
       model.showingNewTerminal = false
+    }
+    .onChange(of: model.navigationRequest) { _, request in
+      guard let request else { return }
+      navigate(request.target)
+      model.clearNavigationRequest()
     }
     .onChange(of: model.workspace?.repos) { _, _ in
       docsPanelModel.update(workspace: model.workspace)
@@ -255,6 +286,8 @@ public struct BoardView: View {
       }
     }
     .onAppear {
+      model.startCronScheduler()
+      SettingsViewModel.applyAppearance(model.settings.preferences.appearance)
       voiceHotkeyMonitor.start { isPressed in
         Task { await voiceModel.setPressed(isPressed) }
       }
@@ -287,47 +320,73 @@ public struct BoardView: View {
     }
   }
 
+  private var boardPanel: BoardRailPanel {
+    BoardRailPanel(
+      id: "board", icon: .workspace, title: "Agenter", section: .primary,
+      badge: model.runningConsoleCount, isSelected: openPanel == nil
+    ) {
+      openPanel = nil
+    }
+  }
+
+  private var railPanels: [BoardRailPanel] {
+    BoardSidePanel.railOrder.map { panel in
+      BoardRailPanel(
+        id: panel.rawValue,
+        icon: panel.icon,
+        title: panel.railTitle,
+        section: panel.section,
+        badge: model.railBadge(for: panel),
+        isSelected: openPanel == panel
+      ) {
+        togglePanel(panel)
+      }
+    }
+  }
+
   private func togglePanel(_ panel: BoardSidePanel) {
     let next = BoardSidePanel.toggled(openPanel, panel)
-    openPanel = next
-    if next == .presets { ensurePresetsModel() }
-    if next == .chat { ensureChatModel() }
+    show(next)
+  }
+
+  private func show(_ panel: BoardSidePanel?) {
+    // The board's first responder (a terminal) draws its focus ring above SwiftUI overlays; drop it under a dialog.
+    if panel != nil { NSApp.keyWindow?.makeFirstResponder(nil) }
+    openPanel = panel
+    if panel == .presets { ensurePresetsModel() }
+    if panel == .chat { ensureChatModel() }
+    if panel == .activity { model.markActivityRead() }
+  }
+
+  /// ⌘1–⌘5 from the app menu. Agenter goes home; a section opens that panel without toggling it shut.
+  private func navigate(_ target: BoardNavigation) {
+    switch target {
+    case .board: show(nil)
+    case let .panel(panel): show(panel)
+    }
   }
 
   private func panelSubtitle(_ panel: BoardSidePanel) -> String {
     switch panel {
-    case .settings: "App preferences"
     case .presets: "Reusable prompts and commands"
     default: model.workspace?.name ?? "No active workspace"
     }
   }
 
   @ViewBuilder
-  private func sidePanel(_ panel: BoardSidePanel) -> some View {
-    if panel == .loops {
-      LoopPanel(model: model)
-        .frame(width: panel.width)
-        .padding(Spacing.sm)
-        .background {
+  private func dialogPanel(_ panel: BoardSidePanel) -> some View {
+    PanelHost(
+      title: panel.hostTitle,
+      subtitle: panelSubtitle(panel),
+      identifier: panel.hostIdentifier,
+      onClose: { openPanel = nil }
+    ) {
+      panelBody(panel)
+        .overlay(alignment: .topLeading) {
           PanelMarker(identifier: panel.marker, label: panel.hostTitle)
             .frame(width: 4, height: 4)
             .allowsHitTesting(false)
         }
-    } else {
-      PanelHost(
-        title: panel.hostTitle,
-        subtitle: panelSubtitle(panel),
-        identifier: panel.hostIdentifier,
-        onClose: { openPanel = nil }
-      ) {
-        panelBody(panel)
-          .overlay(alignment: .topLeading) {
-            PanelMarker(identifier: panel.marker, label: panel.hostTitle)
-              .frame(width: 4, height: 4)
-              .allowsHitTesting(false)
-          }
-      }
-      .frame(width: panel.width)
     }
   }
 
@@ -335,7 +394,9 @@ public struct BoardView: View {
   private func panelBody(_ panel: BoardSidePanel) -> some View {
     switch panel {
     case .settings:
-      SettingsPanel(model: model.settings)
+      SettingsPanel(model: model.settings) { show(.usage) }
+    case .activity:
+      ActivityPanel(model: model)
     case .docs:
       DocsPanel(model: docsPanelModel)
     case .code:
@@ -368,9 +429,11 @@ public struct BoardView: View {
     case .shots:
       ScreenshotLibraryPanel(model: screenshotPanelModel)
     case .planner:
-      PlannerPanel(model: plannerPanelModel)
+      PlannerPanel(
+        model: plannerPanelModel,
+        header: AnyView(WiresSection(model: model, onDone: { openPanel = nil })))
     case .loops:
-      EmptyView()
+      LoopPanel(model: model)
     }
   }
 
@@ -380,43 +443,22 @@ public struct BoardView: View {
   }
 
   private var tabs: some View {
-    HStack(spacing: Spacing.xs) {
-      ScrollView(.horizontal) {
-        HStack(spacing: Spacing.xs) {
+    HStack(spacing: DS.Space.xs) {
+      ScrollView(.horizontal, showsIndicators: false) {
+        HStack(spacing: DS.Space.xs) {
           ForEach(model.workspaces) { workspace in
-            Button {
-              resignTerminalFocus()
-              model.switchWorkspace(workspace.id)
-            } label: {
-              Text(workspace.name)
-                .font(Typography.bodyEmphasis)
-                .lineLimit(1)
-                .padding(.horizontal, Spacing.sm)
-                .padding(.vertical, Spacing.xs)
-                .foregroundStyle(
-                  workspace.id == model.activeWorkspaceID ? Palette.accent : Palette.secondaryInk
-                )
-                .background(
-                  workspace.id == model.activeWorkspaceID ? Palette.accentSoft : Palette.surface,
-                  in: RoundedRectangle(cornerRadius: Spacing.radiusSmall)
-                )
-                .overlay(
-                  RoundedRectangle(cornerRadius: Spacing.radiusSmall)
-                    .stroke(
-                      workspace.id == model.activeWorkspaceID ? Palette.accent : Palette.border))
-            }
-            .buttonStyle(.plain)
-            .accessibilityAddTraits(workspace.id == model.activeWorkspaceID ? .isSelected : [])
-            .contextMenu { Button("Rename…") { beginRename(workspace) } }
-            .help("Control-click to rename workspace")
+            workspacePill(workspace)
           }
         }
+        .padding(.vertical, 1)
       }
+      .frame(maxWidth: .infinity, alignment: .leading)
       Button {
         _ = model.createWorkspace(name: "Workspace \(model.workspaces.count + 1)")
       } label: {
         Icon.add.image
       }
+      .buttonStyle(.lbIcon)
       .help("New workspace").accessibilityLabel("New workspace")
       if let workspace = model.workspace {
         Button {
@@ -424,21 +466,68 @@ public struct BoardView: View {
         } label: {
           Icon.menu.image
         }
+        .buttonStyle(.lbIcon)
         .help("Rename workspace").accessibilityLabel("Rename workspace")
       }
-      addConsoleControl(identifier: "toolbar.addConsole") {
-        Label("Add console", systemImage: Icon.add.rawValue)
-      }
-      .fixedSize()
-      newTerminalButton(identifier: "toolbar.newTerminal")
+      AXActionButton(
+        title: "Cron",
+        systemImage: "repeat",
+        identifier: "toolbar.showLoops",
+        accessibilityLabel: "Show cron",
+        enabled: model.workspace != nil,
+        highlighted: openPanel == .loops,
+        compact: false,
+        headerIcon: true
+      ) { togglePanel(.loops) }
+      .frame(width: 28, height: 28)
+      .help("Show cron")
+      boardActions
+      zoomControls
+      newTerminalButton(identifier: "toolbar.newTerminal", primary: true)
+    }
+    .padding(.horizontal, DS.Space.sm)
+    .padding(.vertical, DS.Space.sm)
+    .background(.ultraThinMaterial)
+    .overlay(alignment: .bottom) { Rectangle().fill(DS.Color.hairline).frame(height: 1) }
+  }
+
+  private func workspacePill(_ workspace: Workspace) -> some View {
+    let isActive = workspace.id == model.activeWorkspaceID
+    return Button {
+      resignTerminalFocus()
+      model.switchWorkspace(workspace.id)
+    } label: {
+      Text(workspace.name)
+        .font(DS.Font.bodyEmphasis)
+        .lineLimit(1)
+        .padding(.horizontal, DS.Space.sm)
+        .padding(.vertical, 6)
+        .foregroundStyle(isActive ? DS.Color.accentInk : DS.Color.secondaryInk)
+        .background(isActive ? DS.Color.accentSoft : Color.clear, in: Capsule())
+        .overlay(
+          Capsule()
+            .strokeBorder(
+              isActive ? DS.Color.accent.opacity(0.35) : DS.Color.hairline.opacity(0.6), lineWidth: 1))
+        .animation(
+          DS.Motion.animation(DS.Motion.snappy, reduceMotion: reduceMotion), value: model.activeWorkspaceID)
+    }
+    .buttonStyle(.plain)
+    .accessibilityAddTraits(isActive ? .isSelected : [])
+    .contextMenu { Button("Rename…") { beginRename(workspace) } }
+    .help("Control-click to rename workspace")
+  }
+
+  private var zoomControls: some View {
+    HStack(spacing: 0) {
       Button {
         model.setZoom(model.zoom / 1.1)
       } label: {
         Text("−")
       }
+      .buttonStyle(.lbIcon)
       .help("Zoom out (⌘−)").accessibilityLabel("Zoom out")
       Text(model.zoom, format: .percent.precision(.fractionLength(0)))
-        .font(Typography.caption).foregroundStyle(Palette.secondaryInk)
+        .font(DS.Font.caption).foregroundStyle(DS.Color.secondaryInk)
         .monospacedDigit().frame(minWidth: 36)
         .accessibilityLabel("Canvas zoom")
       Button {
@@ -446,30 +535,60 @@ public struct BoardView: View {
       } label: {
         Icon.add.image
       }
+      .buttonStyle(.lbIcon)
       .help("Zoom in (⌘+)").accessibilityLabel("Zoom in")
-      AXActionButton(
-        title: "Loops",
-        systemImage: "repeat",
-        identifier: "toolbar.showLoops",
-        accessibilityLabel: "Show loops",
-        enabled: model.workspace != nil,
-        highlighted: openPanel == .loops,
-        compact: false,
-        headerIcon: true
-      ) { togglePanel(.loops) }
-      .frame(width: 28, height: 28)
-      .help("Show loops")
-      Button { showingGroupPrompt = true } label: { Image(systemName: "rectangle.3.group") }
-        .help("Group selected consoles").accessibilityLabel("Group selected consoles")
-        .disabled(!model.canCreateGroup)
     }
-    .padding(Spacing.xs)
-    .background(Palette.surface)
-    .overlay(alignment: .bottom) { Rectangle().fill(Palette.border).frame(height: 1) }
+    .padding(.horizontal, DS.Space.xxs)
+    .frame(height: 32)
+    .background(DS.Color.raisedSurface.opacity(0.7), in: Capsule())
+    .overlay(Capsule().strokeBorder(DS.Color.hairline, lineWidth: 1))
+  }
+
+  /// Board tools folded out of the sidebar: quick add, tidy, group and manage groups.
+  private var boardActions: some View {
+    HStack(spacing: DS.Space.xxs) {
+      headerAction("Hurtigstart", "bolt.fill", "rail.addConsole", "Add console",
+        enabled: model.workspace != nil, highlighted: showingAgentPicker,
+        help: "Start en agent raskt fra lista") { showingAgentPicker.toggle() }
+      headerAction("Rydd", "square.grid.2x2", "board.tidy", "Rydd tavla",
+        enabled: (model.workspace?.nodes.isEmpty ?? true) == false,
+        help: "Rydd tavla: legg kortene i et rutenett uten overlapp") {
+          model.tidyBoard(viewportWidth: boardViewportWidth)
+        }
+      headerAction("Grupper", "rectangle.3.group", "rail.createGroup", "Create group",
+        enabled: model.canCreateGroup, help: "Lag en gruppe av de valgte terminalene") {
+          showingGroupPrompt = true
+        }
+      headerAction("Administrer grupper", "slider.horizontal.3", "rail.manageGroups", "Manage groups",
+        enabled: model.workspace?.groups.isEmpty == false,
+        help: "Gi nytt navn, endre medlemmer eller slett grupper") { showingGroups = true }
+    }
+    .padding(DS.Space.xxs)
+    .background(Capsule().fill(DS.Color.surface.opacity(0.6)))
+    .overlay(Capsule().strokeBorder(DS.Color.hairline, lineWidth: 1))
+  }
+
+  private func headerAction(
+    _ title: String, _ symbol: String, _ identifier: String, _ label: String,
+    enabled: Bool, highlighted: Bool = false, help: String, action: @escaping () -> Void
+  ) -> some View {
+    AXActionButton(
+      title: title,
+      systemImage: symbol,
+      identifier: identifier,
+      accessibilityLabel: label,
+      enabled: enabled,
+      highlighted: highlighted,
+      compact: false,
+      headerIcon: true,
+      action: action
+    )
+    .frame(width: 28, height: 28)
+    .help(help)
   }
 
   private var agentPickerOverlay: some View {
-    ZStack(alignment: .bottomLeading) {
+    ZStack(alignment: .topTrailing) {
       if showingAgentPicker {
         Color.black.opacity(0.001)
           .contentShape(Rectangle())
@@ -478,42 +597,45 @@ public struct BoardView: View {
           .accessibilityIdentifier("agent.picker.dismiss")
           .zIndex(0)
         AgentPickerList(model: model) { showingAgentPicker = false }
-          .padding(.leading, 76)
-          .padding(.bottom, Spacing.sm)
+          .padding(.trailing, 160)
+          .padding(.top, 52)
           .zIndex(1)
       }
     }
-    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
   }
 
-  private func newTerminalButton(identifier: String) -> some View {
+  private func newTerminalButton(identifier: String, primary: Bool = false) -> some View {
     AXActionButton(
-      title: "New terminal",
+      title: "Ny terminal",
       systemImage: Icon.add.rawValue,
       identifier: identifier,
       accessibilityLabel: "New terminal",
       enabled: model.workspace != nil,
       highlighted: model.showingNewTerminal,
+      primary: primary,
       compact: false
     ) {
       model.beginNewTerminal()
     }
-    .frame(width: 132, height: 28)
+    .frame(width: 132, height: primary ? 32 : 28)
+    .background {
+      if primary {
+        RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous)
+          .fill(DS.Color.accentGradient)
+      }
+    }
   }
 
-  private func addConsoleControl<Label: View>(
-    identifier: String, @ViewBuilder label: () -> Label
-  ) -> some View {
-    Button {
-      showingAgentPicker.toggle()
-    } label: {
-      label()
+  /// The workspace as drawn: idle, unselected cards use the compact height so group frames hug them.
+  private var displayedWorkspace: Workspace? {
+    guard var workspace = model.workspace else { return nil }
+    workspace.nodes = workspace.nodes.map { node in
+      var node = node
+      node.frame = model.displayedFrame(node)
+      return node
     }
-    .buttonStyle(.plain)
-    .disabled(model.workspace == nil)
-    .help("Add console")
-    .accessibilityLabel("Add console")
-    .accessibilityIdentifier(identifier)
+    return workspace
   }
 
   private var canvas: some View {
@@ -524,23 +646,24 @@ public struct BoardView: View {
     return GeometryReader { geometry in
       ZStack(alignment: .topLeading) {
         Canvas { context, size in
-          let step = Spacing.xl * zoom
-          var grid = Path()
+          // Faint dot grid. Spacing follows zoom but never gets denser than 16 pt.
+          let step = max(16, DS.Space.xl * zoom)
+          let radius: CGFloat = 1
+          var dots = Path()
           for x in stride(
             from: panX.truncatingRemainder(dividingBy: step), through: size.width, by: step)
           {
-            grid.move(to: CGPoint(x: x, y: 0))
-            grid.addLine(to: CGPoint(x: x, y: size.height))
+            for y in stride(
+              from: panY.truncatingRemainder(dividingBy: step), through: size.height, by: step)
+            {
+              dots.addEllipse(
+                in: CGRect(x: x - radius, y: y - radius, width: radius * 2, height: radius * 2))
+            }
           }
-          for y in stride(
-            from: panY.truncatingRemainder(dividingBy: step), through: size.height, by: step)
-          {
-            grid.move(to: CGPoint(x: 0, y: y))
-            grid.addLine(to: CGPoint(x: size.width, y: y))
-          }
-          context.stroke(grid, with: .color(Palette.border.opacity(0.5)), lineWidth: 0.5)
+          context.fill(dots, with: .color(Palette.secondaryInk.opacity(0.06)))
         }
-        .background(Palette.canvas)
+        .background(DS.Color.canvasGlow)
+        .background(DS.Color.canvasGradient)
         .allowsHitTesting(false)
         CanvasBackground(
           onPan: { model.pan(dx: $0, dy: $1) },
@@ -549,20 +672,42 @@ public struct BoardView: View {
             model.select(nil)
           })
         GroupMap(
-          workspace: model.workspace,
+          workspace: displayedWorkspace,
           members: Dictionary(
             uniqueKeysWithValues: (model.workspace?.nodes ?? []).map { ($0.id, groupMember($0)) }),
           zoom: model.zoom, panX: model.panX, panY: model.panY
         )
         .allowsHitTesting(false)
+        WireLayer(
+          model: model, frames: wireFrames,
+          transform: BoardTransform(zoom: model.zoom, panX: model.panX, panY: model.panY))
         ForEach(model.workspace?.nodes.filter { $0.kind == .console } ?? []) { node in
+          let compact = BoardLayout.isCompact(idle: model.consoleIsIdle(node.id))
+          let shown = model.displayedFrame(node)
           BoardConsoleCard(model: model, node: node)
-            .frame(width: node.frame.w, height: node.frame.h)
+            .frame(width: shown.w, height: shown.h)
+            .animation(DS.Motion.animation(DS.Motion.snappy, reduceMotion: false), value: compact)
             .scaleEffect(model.zoom, anchor: .topLeading)
             .offset(
               x: node.frame.x * model.zoom + model.panX, y: node.frame.y * model.zoom + model.panY
             )
             .zIndex(model.selectedNodeIDs.contains(node.id) ? 1 : 0)
+        }
+        WirePortsLayer(
+          model: model, frames: wireFrames,
+          order: (model.workspace?.nodes ?? []).filter { $0.kind == .console }.map(\.id),
+          transform: BoardTransform(zoom: model.zoom, panX: model.panX, panY: model.panY),
+          hoveredCard: hoveredCard
+        )
+        .zIndex(1.5)
+        if model.selectedWireID != nil {
+          Button("Slett tråd") {
+            if let id = model.selectedWireID { model.removeWire(id) }
+          }
+          .keyboardShortcut(.delete, modifiers: [])
+          .opacity(0)
+          .frame(width: 0, height: 0)
+          .accessibilityHidden(true)
         }
         OrchestratorLinkOverlay(
           links: model.orchestratorLinks,
@@ -572,30 +717,48 @@ public struct BoardView: View {
           panY: model.panY
         )
         .zIndex(2)
-        if model.workspace?.nodes.isEmpty == true {
-          VStack(spacing: Spacing.sm) {
-            Text("Room to work").font(Typography.display).foregroundStyle(Palette.ink)
-            Text("Add a console. Drag the background or scroll to pan; pinch to zoom.")
-              .font(Typography.body).foregroundStyle(Palette.secondaryInk)
-            addConsoleControl(identifier: "canvas.addConsole") {
-              Label("Add console", systemImage: Icon.add.rawValue)
+        if OnboardingCard.shouldShow(workspace: model.workspace) {
+          OnboardingCard(
+            hasWorkspace: model.workspace != nil,
+            onStart: { model.beginNewTerminal() },
+            onDocs: { show(.docs) },
+            onCreateWorkspace: {
+              _ = model.createWorkspace(name: "Workspace \(model.workspaces.count + 1)")
             }
-            .fixedSize()
-            newTerminalButton(identifier: "canvas.newTerminal")
-          }
-          .padding(Spacing.lg)
-          .background(Palette.surface, in: RoundedRectangle(cornerRadius: Spacing.radiusLarge))
+          )
           .frame(width: geometry.size.width, height: geometry.size.height)
           .allowsHitTesting(true)
         }
       }
       .coordinateSpace(name: "boardViewport")
+      .onContinuousHover(coordinateSpace: .named("boardViewport")) { phase in
+        switch phase {
+        case let .active(location):
+          let point = BoardTransform(zoom: model.zoom, panX: model.panX, panY: model.panY).board(location)
+          let card = WireGeometry.card(at: point, in: model.consoleFrames(), padding: 24)
+          if card != hoveredCard { hoveredCard = card }
+        case .ended:
+          hoveredCard = nil
+        }
+      }
+      .onChange(of: model.focusedNodeID) { _, focused in
+        // Typing in a terminal must never hit a selected wire's Delete shortcut.
+        if focused != nil { model.selectedWireID = nil }
+      }
       .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
       .clipped()
       .onAppear {
+        boardViewportWidth = geometry.size.width
         model.revealConsolesInViewport(width: geometry.size.width, height: geometry.size.height)
       }
+      .onChange(of: model.runningConsoleCount) { _, _ in
+        model.tidyBoardIfOverlapping(viewportWidth: geometry.size.width)
+      }
+      .onChange(of: model.workspace?.nodes.count) { _, _ in
+        model.tidyBoardIfOverlapping(viewportWidth: geometry.size.width)
+      }
       .onChange(of: geometry.size) { _, size in
+        boardViewportWidth = size.width
         model.revealConsolesInViewport(width: size.width, height: size.height)
       }
       .onChange(of: model.activeWorkspaceID) { _, _ in
@@ -610,6 +773,10 @@ public struct BoardView: View {
             anchorY: value.startAnchor.y * geometry.size.height)
         }.onEnded { _ in pinchStart = nil })
     }
+  }
+
+  private var wireFrames: [UUID: NodeFrame] {
+    Dictionary(model.consoleFrames(), uniquingKeysWith: { first, _ in first })
   }
 
   private func beginRename(_ workspace: Workspace) {
@@ -654,6 +821,7 @@ public enum ConsoleCardStatus {
 }
 
 private struct BoardConsoleCard: View {
+
   let model: BoardViewModel
   let node: Node
   @State private var dragOrigin: NodeFrame?
@@ -663,15 +831,29 @@ private struct BoardConsoleCard: View {
   private var orchestratorStatus: AgentStatus? {
     node.agentID == OrchestratorKind.agentID ? model.orchestratorStatuses[node.id] : nil
   }
+
+  /// The card's one-line live activity: the short task when there is one, else the newest output line.
+  private var activityLine: String? {
+    if let task = model.agentTasks[node.id] { return AgentTaskBanner.label(task) }
+    // Output text is not published; the byte count is. Reading it keeps the strip fresh.
+    let _ = session?.outputByteCount
+    guard let output = model.recentConsoleOutput(node.id, maxBytes: 4_096) else { return nil }
+    return ConsoleActivityLine.latest(in: output)
+  }
   var body: some View {
     ConsoleCardChrome(
       title: model.workspace?.groups.first(where: { $0.leadNodeID == node.id }) == nil ? node.title : "★ \(node.title) · Lead",
-      icon: node.agentID == OrchestratorKind.agentID ? .agents : .terminal,
+      agentID: node.agentID ?? "shell",
       status: ConsoleCardStatus.resolve(
         sessionStatus: session?.status ?? orchestratorStatus,
         hasLaunchError: model.consoleLaunchErrors[node.id] != nil),
-      isSelected: model.selectedNodeIDs.contains(node.id)
+      isSelected: model.selectedNodeIDs.contains(node.id),
+      activity: activityLine
     ) {
+      VStack(spacing: 0) {
+      if let agentTask = model.agentTasks[node.id] {
+        AgentTaskBanner(record: agentTask)
+      }
       ZStack {
         if node.agentID == OrchestratorKind.agentID, model.orchestratorTranscripts[node.id] != nil {
           OrchestratorConsoleBody(model: model, nodeID: node.id)
@@ -686,39 +868,70 @@ private struct BoardConsoleCard: View {
             }
           }
         } else {
-          VStack(spacing: Spacing.sm) {
-            Text("\(node.title) is ready to start").font(Typography.body).foregroundStyle(
-              Palette.secondaryInk)
+          ViewThatFits(in: .vertical) {
+          VStack(spacing: DS.Space.sm) {
+            Image(systemName: "play.circle")
+              .font(.system(size: 20, weight: .medium))
+              .foregroundStyle(DS.Color.accent)
+              .frame(width: 48, height: 48)
+              .background(DS.Color.accentSoft, in: Circle())
+            Text("Klar til start")
+              .font(DS.Font.title)
+              .foregroundStyle(DS.Color.ink)
             Text(node.cwd.path)
-              .font(Typography.caption)
-              .foregroundStyle(Palette.secondaryInk)
+              .font(DS.Font.mono)
+              .foregroundStyle(DS.Color.secondaryInk)
               .lineLimit(1)
               .truncationMode(.middle)
               .multilineTextAlignment(.center)
-              .padding(.horizontal, Spacing.sm)
+              .padding(.horizontal, DS.Space.sm)
               .accessibilityIdentifier("console.directory.\(node.id.uuidString)")
               .accessibilityLabel("Working folder")
             if let message = model.consoleLaunchErrors[node.id] {
               Text(message)
-                .font(Typography.caption)
-                .foregroundStyle(Palette.status(.error))
+                .font(DS.Font.caption)
+                .foregroundStyle(DS.Color.status(.error))
                 .multilineTextAlignment(.center)
-                .padding(.horizontal, Spacing.sm)
+                .padding(.horizontal, DS.Space.sm)
                 .accessibilityIdentifier("console.launchError")
             }
-            AXActionButton(
-              title: "Start",
-              systemImage: nil,
-              identifier: "console.start.\(node.id.uuidString)",
-              accessibilityLabel: "Start \(node.title)",
-              enabled: true,
-              highlighted: false,
-              compact: false
-            ) {
+            Button("Start") {
               Task { await model.startConsole(node.id) }
             }
-            .frame(width: 72, height: 28)
+            .buttonStyle(.lbPrimary)
+            .accessibilityIdentifier("console.start.\(node.id.uuidString)")
+            .accessibilityLabel("Start \(node.title)")
           }
+          // Compact strip for idle cards (BoardLayout.compactHeight).
+          HStack(spacing: DS.Space.sm) {
+            Image(systemName: "play.circle")
+              .font(.system(size: 16, weight: .medium))
+              .foregroundStyle(DS.Color.accent)
+              .frame(width: 32, height: 32)
+              .background(DS.Color.accentSoft, in: Circle())
+            VStack(alignment: .leading, spacing: 2) {
+              Text("Klar til start")
+                .font(DS.Font.bodyEmphasis)
+                .foregroundStyle(DS.Color.ink)
+              Text(model.consoleLaunchErrors[node.id] ?? node.cwd.path)
+                .font(DS.Font.caption)
+                .foregroundStyle(
+                  model.consoleLaunchErrors[node.id] == nil ? DS.Color.secondaryInk : DS.Color.status(.error))
+                .lineLimit(1)
+                .truncationMode(.middle)
+            }
+            Spacer(minLength: 0)
+            Button("Start") {
+              Task { await model.startConsole(node.id) }
+            }
+            .buttonStyle(.lbPrimary)
+            .accessibilityIdentifier("console.start.\(node.id.uuidString)")
+            .accessibilityLabel("Start \(node.title)")
+          }
+          .padding(.horizontal, DS.Space.sm)
+          }
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+          .padding(DS.Space.sm)
           .simultaneousGesture(
             TapGesture().onEnded {
               model.select(node.id, extending: NSEvent.modifierFlags.contains(.shift))
@@ -726,6 +939,7 @@ private struct BoardConsoleCard: View {
         }
       }
       .frame(maxWidth: .infinity, maxHeight: .infinity)
+      }
     }
     .statusDetail(exitCode: session?.exitCode, identifier: ConsoleCardControl.statusIdentifier(node.id))
     .headerDrag(
@@ -741,37 +955,54 @@ private struct BoardConsoleCard: View {
       }, onEnded: { dragOrigin = nil }
     )
     .keyboardFocus(model.focusedNodeID == node.id)
+    .working(model.chatWorking[node.id] != nil)
+    .renamable(
+      name: node.title, isRenaming: model.renamingNodeID == node.id,
+      onBegin: { model.renamingNodeID = node.id },
+      onCommit: { name in
+        if let name { model.renameConsole(node.id, to: name) }
+        model.renamingNodeID = nil
+      })
     .headerSelection {
       model.select(node.id, extending: NSEvent.modifierFlags.contains(.shift))
     }
     .headerControls {
       HStack(spacing: 0) {
-        AXActionButton(
-          title: "Restart",
-          systemImage: Icon.restart.rawValue,
-          identifier: ConsoleCardControl.restartIdentifier(node.id),
-          accessibilityLabel: "Restart \(node.title)",
-          enabled: true,
-          highlighted: false,
-          compact: false,
-          headerIcon: true
-        ) {
+        Menu {
+          Button("Gi nytt navn…") { model.renamingNodeID = node.id }
+          Button("Bytt AI og modell…") { model.providerPickerNodeID = node.id }
+          Button("Tagg @\(TerminalHandle.slug(node.title)) i chatten") { model.insertChatMention(node.id) }
+          Divider()
+          Button("Start på nytt") { Task { await model.restartConsole(node.id) } }
+          Button("Lukk") { Task { await model.closeConsole(node.id) } }
+        } label: {
+          Icon.menu.image.foregroundStyle(Palette.secondaryInk)
+            .frame(width: 28, height: 28)
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Kortmeny")
+        .accessibilityLabel("\(node.title) meny")
+        Button {
           Task { await model.restartConsole(node.id) }
+        } label: {
+          Icon.restart.image
         }
-        .frame(width: 28, height: 28)
-        AXActionButton(
-          title: "Close",
-          systemImage: Icon.close.rawValue,
-          identifier: ConsoleCardControl.closeIdentifier(node.id),
-          accessibilityLabel: "Close \(node.title)",
-          enabled: true,
-          highlighted: false,
-          compact: false,
-          headerIcon: true
-        ) {
+        .buttonStyle(.lbIcon)
+        .help("Restart \(node.title)")
+        .accessibilityLabel("Restart \(node.title)")
+        .accessibilityIdentifier(ConsoleCardControl.restartIdentifier(node.id))
+        Button {
           Task { await model.closeConsole(node.id) }
+        } label: {
+          Icon.close.image
         }
-        .frame(width: 28, height: 28)
+        .buttonStyle(.lbIcon)
+        .help("Close \(node.title)")
+        .accessibilityLabel("Close \(node.title)")
+        .accessibilityIdentifier(ConsoleCardControl.closeIdentifier(node.id))
       }
     }
     .overlay(alignment: .bottomTrailing) {
@@ -798,26 +1029,39 @@ struct BoardRailPanel: Identifiable {
   let id: String
   let icon: Icon
   let title: String
+  let section: RailSection
+  let badge: Int?
   let isSelected: Bool
   let action: () -> Void
 
-  init(id: String? = nil, icon: Icon, title: String, isSelected: Bool, action: @escaping () -> Void) {
+  init(
+    id: String? = nil,
+    icon: Icon,
+    title: String,
+    section: RailSection = .primary,
+    badge: Int? = nil,
+    isSelected: Bool,
+    action: @escaping () -> Void
+  ) {
     self.id = id ?? title
     self.icon = icon
     self.title = title
+    self.section = section
+    self.badge = badge
     self.isSelected = isSelected
     self.action = action
   }
 }
 
-/// Panel buttons scroll. Add console, Group, and Manage stay on screen at an 800pt window.
-/// Compact rail buttons are wide enough for the longest caption at 11 pt.
-/// A 52 pt button draws "Markdown" as "Markdo..." because that string is about 54 pt wide.
+/// Panel rows scroll. Console, Group, and Manage stay on screen at an 800 pt window.
+/// The 208 pt sidebar keeps the longest label beside its icon without clipping.
 public enum BoardRailMetrics {
-  public static let buttonHeight: CGFloat = 48
-  /// "Markdown" at the compact 11 pt font is 54 pt. The extra width keeps the truncating tail from drawing an ellipsis.
-  public static let buttonWidth: CGFloat = 64
-  public static var railWidth: CGFloat { buttonWidth + Spacing.xs * 2 }
+  public static let sidebarWidth: CGFloat = 208
+  public static let rowHeight: CGFloat = 32
+
+  /// Icon-over-label buttons in sheets and pickers.
+  public static let buttonHeight: CGFloat = 52
+  public static let buttonWidth: CGFloat = 76
 
   @MainActor
   public static func captionFits(_ button: NSButton) -> Bool {
@@ -825,78 +1069,171 @@ public enum BoardRailMetrics {
     let rect = cell.titleRect(forBounds: button.bounds)
     return button.attributedTitle.size().width <= rect.width
   }
+
+  /// AppKit has no `lineLimit`/`minimumScaleFactor`: shrink the caption to 85% before it ellipsises.
+  public static func fittedCaption(
+    _ title: String,
+    width: CGFloat = buttonWidth,
+    color: NSColor = NSColor(Palette.secondaryInk)
+  ) -> NSAttributedString {
+    let available = width - 8
+    let paragraph = NSMutableParagraphStyle()
+    paragraph.lineBreakMode = .byTruncatingTail
+    let minimum: CGFloat = 11 * 0.85
+    func attributed(_ size: CGFloat) -> NSAttributedString {
+      NSAttributedString(
+        string: title,
+        attributes: [
+          .font: NSFont.systemFont(ofSize: size),
+          .foregroundColor: color,
+          .paragraphStyle: paragraph,
+        ])
+    }
+    var size: CGFloat = 11
+    while size > minimum, attributed(size).size().width > available {
+      size -= 0.25
+    }
+    return attributed(size)
+  }
 }
 
-struct BoardRail<AgentMenu: View>: View {
+/// The translucent sidebar: workspace name, the five places, a collapsible `Verktøy` group,
+/// and Console / Group / Manage pinned at the bottom.
+/// Sidebar navigation only. Board actions (Hurtigstart, Rydd, Grupper) live in the board's top bar.
+struct BoardRail: View {
+  let workspaceName: String?
   let panels: [BoardRailPanel]
-  let canCreateGroup: Bool
-  let canManageGroups: Bool
-  let onCreateGroup: () -> Void
-  let onManageGroups: () -> Void
-  @ViewBuilder var agentMenu: () -> AgentMenu
+
+  @AppStorage("lanebay.sidebar.toolsExpanded") private var toolsExpanded = true
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  private var primaryPanels: [BoardRailPanel] { panels.filter { $0.section == .primary } }
+  private var toolPanels: [BoardRailPanel] { panels.filter { $0.section == .tools } }
 
   var body: some View {
     VStack(spacing: 0) {
-      ScrollView {
-        VStack(spacing: Spacing.xs) {
-          ForEach(panels) { panel in
-            AXActionButton(
-              title: panel.title,
-              systemImage: panel.icon.rawValue,
-              identifier: "rail.panel.\(panel.id)",
-              accessibilityLabel: panel.title,
-              enabled: true,
-              highlighted: panel.isSelected,
-              compact: true
-            ) {
-              panel.action()
-            }
-            .frame(width: BoardRailMetrics.buttonWidth, height: BoardRailMetrics.buttonHeight)
-          }
+      Text(workspaceName ?? "Lanebay")
+        .font(DS.Font.title)
+        .foregroundStyle(DS.Color.ink)
+        .lineLimit(1)
+        .truncationMode(.middle)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, DS.Space.sm)
+        .padding(.top, DS.Space.md)
+        .padding(.bottom, DS.Space.xs)
+        .help(workspaceName ?? "Lanebay")
+        .accessibilityLabel("Workspace")
+        .accessibilityIdentifier("rail.workspace")
+
+      ScrollView(.vertical, showsIndicators: false) {
+        VStack(alignment: .leading, spacing: DS.Space.xxs) {
+          ForEach(primaryPanels) { panel in row(panel) }
+          toolsSection
         }
-        .padding(.horizontal, Spacing.xs)
-        .padding(.top, Spacing.xs)
+        .padding(.horizontal, DS.Space.sm)
+        .padding(.bottom, DS.Space.xs)
       }
-      .scrollIndicators(.visible)
       .frame(minHeight: 0, maxHeight: .infinity)
-      VStack(spacing: Spacing.xs) {
-        agentMenu()
-        AXActionButton(
-          title: "Group",
-          systemImage: "rectangle.3.group",
-          identifier: "rail.createGroup",
-          accessibilityLabel: "Create group",
-          enabled: canCreateGroup,
-          highlighted: false,
-          compact: true
-        ) {
-          onCreateGroup()
-        }
-        .frame(width: BoardRailMetrics.buttonWidth, height: BoardRailMetrics.buttonHeight)
-        .help("Create a group from the selected consoles")
-        AXActionButton(
-          title: "Manage",
-          systemImage: "slider.horizontal.3",
-          identifier: "rail.manageGroups",
-          accessibilityLabel: "Manage groups",
-          enabled: canManageGroups,
-          highlighted: false,
-          compact: true
-        ) {
-          onManageGroups()
-        }
-        .frame(width: BoardRailMetrics.buttonWidth, height: BoardRailMetrics.buttonHeight)
-        .help("Rename groups, edit membership, or delete groups")
-      }
-      .padding(Spacing.xs)
-      .frame(maxWidth: .infinity)
-      .fixedSize(horizontal: false, vertical: true)
-      .layoutPriority(1)
-      .background(Palette.surface)
+
     }
-    .frame(width: BoardRailMetrics.railWidth)
+    .frame(width: BoardRailMetrics.sidebarWidth)
     .frame(maxHeight: .infinity, alignment: .top)
-    .background(Palette.surface)
+    .background(DS.Color.sidebarWash)
+    .background(DS.Color.canvasDeep.opacity(0.9))
+    .background(SidebarVibrancy())
+  }
+
+  private func row(_ panel: BoardRailPanel) -> some View {
+    ZStack(alignment: .trailing) {
+      if panel.isSelected {
+        RoundedRectangle(cornerRadius: DS.Radius.control, style: .continuous)
+          .fill(DS.Color.accent.opacity(0.22))
+          .overlay(alignment: .leading) {
+            Capsule().fill(DS.Color.accentGradient).frame(width: 3).padding(.vertical, 6)
+          }
+          .allowsHitTesting(false)
+      }
+      AXActionButton(
+        title: panel.title,
+        systemImage: panel.icon.rawValue,
+        identifier: "rail.panel.\(panel.id)",
+        accessibilityLabel: panel.title,
+        enabled: true,
+        highlighted: panel.isSelected,
+        compact: false,
+        row: true
+      ) {
+        panel.action()
+      }
+      if let badge = panel.badge, badge > 0 {
+        Text("\(badge)")
+          .font(DS.Font.caption)
+          .monospacedDigit()
+          .fontWeight(.semibold)
+          .foregroundStyle(Color.white)
+          .padding(.horizontal, 6)
+          .frame(minWidth: 18, minHeight: 18)
+          .background(DS.Color.accentGradient, in: Capsule())
+          .padding(.trailing, DS.Space.xs)
+          .allowsHitTesting(false)
+          .accessibilityHidden(true)
+      }
+    }
+    .frame(height: BoardRailMetrics.rowHeight)
+  }
+
+  private var toolsSection: some View {
+    VStack(alignment: .leading, spacing: DS.Space.xxs) {
+      Button {
+        withAnimation(DS.Motion.animation(DS.Motion.snappy, reduceMotion: reduceMotion)) {
+          toolsExpanded.toggle()
+        }
+      } label: {
+        HStack(spacing: DS.Space.xxs) {
+          Text("Verktøy").sectionCaptionStyle()
+          Spacer(minLength: 0)
+          Image(systemName: "chevron.down")
+            .font(DS.Font.caption)
+            .foregroundStyle(DS.Color.mutedInk)
+            .rotationEffect(.degrees(toolsExpanded ? 0 : -90))
+        }
+        .padding(.horizontal, DS.Space.xs)
+        .frame(height: DS.Space.lg)
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel(toolsExpanded ? "Hide tools" : "Show tools")
+      .accessibilityIdentifier("rail.toolsToggle")
+      if toolsExpanded {
+        ForEach(toolPanels) { panel in row(panel) }
+          .transition(DS.Motion.appear)
+      }
+    }
+    .padding(.top, DS.Space.xxs)
+  }
+
+  private func bottomAction(
+    title: String,
+    systemImage: String,
+    identifier: String,
+    accessibilityLabel: String,
+    enabled: Bool,
+    help: String,
+    action: @escaping () -> Void
+  ) -> some View {
+    AXActionButton(
+      title: title,
+      systemImage: systemImage,
+      identifier: identifier,
+      accessibilityLabel: accessibilityLabel,
+      enabled: enabled,
+      highlighted: false,
+      compact: false,
+      row: true,
+      action: action
+    )
+    .frame(height: BoardRailMetrics.rowHeight)
+    .help(help)
   }
 }
 
@@ -1056,7 +1393,7 @@ enum GroupMapLayout {
     return CGRect(x: card.minX, y: card.minY - 22, width: 10, height: 10)
   }
 
-  /// Room for a status word such as "Waiting for input" beside the light.
+  /// Room for a status word such as "Venter på deg" beside the light.
   static func statusCaption(frame: NodeFrame, zoom: Double, panX: Double, panY: Double) -> CGRect {
     let dot = statusDot(frame: frame, zoom: zoom, panX: panX, panY: panY)
     return CGRect(x: dot.maxX + 4, y: dot.minY - 1, width: 72, height: 12)
@@ -1130,3 +1467,18 @@ private struct GroupMap: View {
     }
   }
 }
+
+/// Behind-window vibrancy for the sidebar; opaque enough that the board never shows through.
+struct SidebarVibrancy: NSViewRepresentable {
+  func makeNSView(context: Context) -> NSVisualEffectView {
+    let view = NSVisualEffectView()
+    view.material = .sidebar
+    view.blendingMode = .behindWindow
+    view.state = .followsWindowActiveState
+    return view
+  }
+
+  func updateNSView(_ view: NSVisualEffectView, context: Context) {}
+}
+
+struct ProviderPickerTarget: Identifiable { let id: UUID }

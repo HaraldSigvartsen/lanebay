@@ -1,5 +1,6 @@
 import SwiftUI
 
+/// A glass card with a title and subtitle; used for grouped content on the board.
 public struct PanelContainer<Content: View>: View {
     public let title: String
     public let subtitle: String?
@@ -12,21 +13,23 @@ public struct PanelContainer<Content: View>: View {
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.md) {
-            VStack(alignment: .leading, spacing: Spacing.xxs) {
-                Text(title).font(Typography.title).foregroundStyle(Palette.ink)
-                if let subtitle { Text(subtitle).font(Typography.caption).foregroundStyle(Palette.secondaryInk) }
+        VStack(alignment: .leading, spacing: DS.Space.md) {
+            VStack(alignment: .leading, spacing: DS.Space.xxs) {
+                Text(title).font(DS.Font.title).foregroundStyle(DS.Color.ink)
+                if let subtitle { Text(subtitle).font(DS.Font.body).foregroundStyle(DS.Color.secondaryInk) }
             }
             content
         }
-        .padding(Spacing.lg)
+        .padding(DS.Space.lg)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(Palette.surface, in: RoundedRectangle(cornerRadius: Spacing.radiusLarge))
-        .overlay(RoundedRectangle(cornerRadius: Spacing.radiusLarge).stroke(Palette.border, lineWidth: 1))
+        .glass(radius: DS.Radius.card)
+        .elevation(DS.Elevation.raised)
     }
 }
 
 /// The shared side-panel shell used by utility panels alongside the board.
+/// Header and padding match `PanelScaffold`; the body scrolls itself so panels can nest
+/// their own timelines and lists.
 public struct PanelHost<Content: View>: View {
     public let title: String
     public let subtitle: String?
@@ -49,28 +52,39 @@ public struct PanelHost<Content: View>: View {
     }
 
     public var body: some View {
-        VStack(spacing: 0) {
-            HStack(alignment: .top, spacing: Spacing.sm) {
-                VStack(alignment: .leading, spacing: Spacing.xxs) {
-                    Text(title).font(Typography.title).foregroundStyle(Palette.ink)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: DS.Space.sm) {
+                VStack(alignment: .leading, spacing: DS.Space.xxs) {
+                    Text(title).font(DS.Font.title).foregroundStyle(DS.Color.ink)
                     if let subtitle {
-                        Text(subtitle).font(Typography.caption).foregroundStyle(Palette.secondaryInk)
+                        Text(subtitle).font(DS.Font.body).foregroundStyle(DS.Color.secondaryInk)
                     }
                 }
-                Spacer(minLength: Spacing.xs)
-                Button(action: onClose) { Icon.close.image }
+                Spacer(minLength: DS.Space.xs)
+                Button(action: onClose) {
+                    Icon.close.image
+                        .foregroundStyle(DS.Pastel.lavenderInk)
+                        .frame(width: 30, height: 30)
+                        .pastelFill(DS.Pastel.lavender, radius: 15)
+                }
                     .buttonStyle(.plain)
-                    .foregroundStyle(Palette.secondaryInk)
-                    .accessibilityLabel("Close \(title) panel")
+                    .accessibilityLabel("Lukk \(title)")
             }
-            .padding(Spacing.md)
-            .overlay(alignment: .bottom) { Rectangle().fill(Palette.border).frame(height: 1) }
+            .padding(.horizontal, DS.Pastel.dialogPadding)
+            .padding(.top, DS.Pastel.dialogPadding)
+            .padding(.bottom, DS.Pastel.sectionSpacing)
+
+            Rectangle().fill(DS.Color.hairline.opacity(0.6)).frame(height: 1)
+                .padding(.horizontal, DS.Pastel.dialogPadding)
+
             content
+                .padding(.horizontal, DS.Pastel.dialogPadding - DS.Space.sm)
+                .padding(.top, DS.Space.sm)
+                .padding(.bottom, DS.Pastel.dialogPadding - DS.Space.sm)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Palette.surface)
-        .overlay(alignment: .leading) { Rectangle().fill(Palette.border).frame(width: 1) }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .pastelGlass(radius: DS.Pastel.dialogRadius, tint: DS.Pastel.lavender, tintOpacity: 0.12)
         .accessibilityIdentifier(identifier)
         .overlay(alignment: .topLeading) {
             PanelMarker(identifier: identifier, label: title)
@@ -80,4 +94,4 @@ public struct PanelHost<Content: View>: View {
     }
 }
 
-#Preview { PanelContainer(title: "Workspace", subtitle: "Local agent board") { Text("Panel content").font(Typography.body).foregroundStyle(Palette.secondaryInk) }.frame(width: 420, height: 260).padding().background(Palette.canvas) }
+#Preview { PanelContainer(title: "Workspace", subtitle: "Local agent board") { Text("Panel content").font(DS.Font.body).foregroundStyle(DS.Color.secondaryInk) }.frame(width: 420, height: 260).padding().background(DS.Color.canvas) }

@@ -79,37 +79,41 @@ public struct UsagePanel: View {
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.sm) {
-            HStack {
-                Text("Local offline usage")
-                    .font(Typography.bodyEmphasis)
-                Spacer()
-                Button("Refresh") { Task { await model.refresh() } }
+        VStack(alignment: .leading, spacing: DS.Space.sm) {
+            HStack(spacing: DS.Space.xs) {
+                Text("Bruk").sectionCaptionStyle()
+                Spacer(minLength: DS.Space.xs)
+                Button("Oppdater") { Task { await model.refresh() } }
+                    .buttonStyle(.lbSecondary)
             }
 
             if let message = model.errorMessage {
-                Text(message).font(Typography.caption).foregroundStyle(Palette.status(.error))
+                Text(message).font(DS.Font.caption).foregroundStyle(DS.Color.status(.error))
             } else if model.days.isEmpty {
-                ContentUnavailableView("No usage yet", systemImage: "clock", description: Text("Start a console and dispatch prompts to populate local usage stats."))
+                EmptyStateView(
+                    symbol: "clock",
+                    title: "Ingen bruk ennå",
+                    message: "Start en konsoll og send et prompt for å samle lokal bruksstatistikk.",
+                    identifier: "usage.empty")
             } else {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: Spacing.sm) {
+                    VStack(alignment: .leading, spacing: DS.Space.sm) {
                         ForEach(model.days) { day in
                             GroupBox(day.day) {
-                                VStack(alignment: .leading, spacing: Spacing.sm) {
+                                VStack(alignment: .leading, spacing: DS.Space.sm) {
                                     ForEach(day.workspaces) { workspace in
-                                        VStack(alignment: .leading, spacing: Spacing.xxs) {
-                                            Text(workspace.workspaceName).font(Typography.bodyEmphasis)
+                                        VStack(alignment: .leading, spacing: DS.Space.xxs) {
+                                            Text(workspace.workspaceName).font(DS.Font.bodyEmphasis)
                                             Text("Prompts: \(workspace.dispatchedPrompts) · Loop iterations: \(workspace.loopIterations)")
-                                                .font(Typography.caption).foregroundStyle(Palette.secondaryInk)
+                                                .font(DS.Font.caption).foregroundStyle(DS.Color.secondaryInk)
                                             Text("Status time — running \(formattedDuration(workspace.runningSeconds)), idle \(formattedDuration(workspace.idleSeconds)), waiting for input \(formattedDuration(workspace.waitingForInputSeconds))")
-                                                .font(Typography.caption).foregroundStyle(Palette.secondaryInk)
+                                                .font(DS.Font.caption).foregroundStyle(DS.Color.secondaryInk)
                                             if workspace.sessions.isEmpty {
-                                                Text("No completed sessions").font(Typography.caption).foregroundStyle(Palette.mutedInk)
+                                                Text("No completed sessions").font(DS.Font.caption).foregroundStyle(DS.Color.mutedInk)
                                             } else {
                                                 ForEach(workspace.sessions.prefix(6)) { session in
                                                     Text("\(session.agent) session · \(formattedDuration(session.durationSeconds))")
-                                                        .font(Typography.caption)
+                                                        .font(DS.Font.caption)
                                                 }
                                             }
                                         }
@@ -123,15 +127,15 @@ public struct UsagePanel: View {
             }
             if let snapshot = model.optionalLogSnapshot {
                 Text("Optional local log snapshot: prompts \(snapshot.dispatchedPrompts), loops \(snapshot.loopIterations), status \(formattedDuration(snapshot.statusDuration.running))/\(formattedDuration(snapshot.statusDuration.idle))/\(formattedDuration(snapshot.statusDuration.waitingForInput))")
-                    .font(Typography.caption)
-                    .foregroundStyle(Palette.mutedInk)
+                    .font(DS.Font.caption)
+                    .foregroundStyle(DS.Color.mutedInk)
             }
             Text("Local only · Offline only · No telemetry")
-                .font(Typography.caption)
-                .foregroundStyle(Palette.mutedInk)
+                .font(DS.Font.caption)
+                .foregroundStyle(DS.Color.mutedInk)
         }
-        .padding(Spacing.sm)
-        .background(Palette.surface)
+        .padding(DS.Space.md)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .task { await model.refresh() }
     }
 

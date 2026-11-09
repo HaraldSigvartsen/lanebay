@@ -57,6 +57,19 @@ public final class SettingsViewModel {
         persist(updated)
     }
 
+    public func setAppearance(_ mode: AppearanceMode) {
+        var updated = preferences
+        updated.appearance = mode
+        persist(updated)
+        Self.applyAppearance(preferences.appearance)
+    }
+
+    /// Forces the app-wide appearance (dark/light) or follows macOS for `.system`.
+    @MainActor public static func applyAppearance(_ mode: AppearanceMode) {
+        guard let app = NSApp else { return }
+        app.appearance = mode.appearanceName.flatMap { NSAppearance(named: NSAppearance.Name($0)) }
+    }
+
     public func setDefaultWorkingDirectory(_ url: URL?) {
         var updated = preferences
         updated.defaultWorkingDirectory = url
@@ -89,7 +102,8 @@ public final class SettingsViewModel {
             recentDirectories: preferences.recentWorkingDirectories,
             defaultDirectory: preferences.defaultWorkingDirectory,
             homeDirectory: homeDirectory ?? fileManager.homeDirectoryForCurrentUser,
-            fileManager: fileManager
+            fileManager: fileManager,
+            lastModels: preferences.lastModelByAgentID
         )
     }
 
@@ -105,7 +119,7 @@ public final class SettingsViewModel {
     }
 
     @discardableResult
-    public func rememberNewTerminal(agentID: String, directory: URL) -> Bool {
+    public func rememberNewTerminal(agentID: String, directory: URL, model: String? = nil) -> Bool {
         let trimmed = agentID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard NewTerminalDraft.isAcceptableAgentID(trimmed),
             let remembered = NewTerminalDraft.rememberedDirectories(
@@ -116,6 +130,12 @@ public final class SettingsViewModel {
         var updated = preferences
         updated.lastUsedAgentID = trimmed
         updated.recentWorkingDirectories = remembered
+        let trimmedModel = model?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if ProviderModels.supportsModel(trimmed), ProviderModels.isAcceptableModel(trimmedModel) {
+            updated.lastModelByAgentID[trimmed] = trimmedModel
+        } else {
+            updated.lastModelByAgentID[trimmed] = nil
+        }
         persist(updated)
         return errorMessage == nil && preferences.lastUsedAgentID == trimmed
     }
@@ -194,6 +214,7 @@ public final class SettingsViewModel {
 
 public struct SettingsPanel: View {
     @Bindable private var model: SettingsViewModel
+    private let onOpenUsage: (() -> Void)?
     @State private var customName = ""
     @State private var customPath = ""
     @State private var customArgs = ""
@@ -201,63 +222,102 @@ public struct SettingsPanel: View {
     @State private var profileAgentID = "codex"
     @State private var profileEnvironment = ""
 
-    public init(model: SettingsViewModel) { self.model = model }
+    public init(model: SettingsViewModel, onOpenUsage: (() -> Void)? = nil) {
+        self.model = model
+        self.onOpenUsage = onOpenUsage
+    }
 
     public var body: some View {
-        Form {
-            Section("Startup") {
-                Toggle("Restore last workspace", isOn: Binding(
-                    get: { model.preferences.restoreLastWorkspace },
-                    set: { model.setRestoreLastWorkspace($0) }
-                )).disabled(!model.canWritePreferences)
-                directorySetting
+        ScrollView {
+            VStack(alignment: .leading, spacing: DS.Space.md) {
+                section("Generelt") { generalControls }
+                section("Leverandører og modeller") { providerControls }
+                section("Utseende") { appearanceNote }
+                section("Bruk") { usageControls }
+                errorLines
             }
-            Section("Notifications") {
-                Toggle("Show agent notifications", isOn: Binding(
-                    get: { model.preferences.showNotifications },
-                    set: { model.setShowNotifications($0) }
-                )).disabled(!model.canWritePreferences)
+            .padding(DS.Space.md)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+    }
+
+    // MARK: - Sections
+
+    private func section<Content: View>(_ caption: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: DS.Space.xs) {
+            Text(caption).sectionCaptionStyle()
+            VStack(alignment: .leading, spacing: DS.Space.sm) {
+                content()
             }
-            Section("Orchestrator") {
-                Toggle("Ask before sending to a terminal", isOn: Binding(
-                    get: { model.preferences.askBeforeSendingToTerminal },
-                    set: { model.setAskBeforeSendingToTerminal($0) }
-                ))
-                .disabled(!model.canWritePreferences)
-                .accessibilityIdentifier("settings.askBeforeSending")
-                Text("A send shows the target and the text before anything is written. Agent permission prompts are never answered automatically.")
-                    .font(Typography.caption).foregroundStyle(Palette.secondaryInk)
+            .padding(DS.Space.sm)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .glass(radius: DS.Radius.card)
+        }
+    }
+
+    private var generalControls: some View {
+        VStack(alignment: .leading, spacing: DS.Space.xs) {
+            Picker("Utseende", selection: Binding(
+                get: { model.preferences.appearance },
+                set: { model.setAppearance($0) }
+            )) {
+                ForEach(AppearanceMode.allCases, id: \.self) { Text($0.label).tag($0) }
             }
-            Section("Voice") {
-                Toggle("Speak waiting-for-input status", isOn: Binding(
-                    get: { model.preferences.speakWaitingForInputStatus },
-                    set: { model.setSpeakWaitingForInputStatus($0) }
-                )).disabled(!model.canWritePreferences)
-                Text("Uses local macOS text-to-speech only. Off by default.")
-                    .font(Typography.caption).foregroundStyle(Palette.secondaryInk)
+            .pickerStyle(.segmented)
+            .disabled(!model.canWritePreferences)
+            .accessibilityIdentifier("settings.appearance")
+            Toggle("Gjenopprett siste arbeidsområde", isOn: Binding(
+                get: { model.preferences.restoreLastWorkspace },
+                set: { model.setRestoreLastWorkspace($0) }
+            )).disabled(!model.canWritePreferences)
+            Toggle("Vis varsler fra agenter", isOn: Binding(
+                get: { model.preferences.showNotifications },
+                set: { model.setShowNotifications($0) }
+            )).disabled(!model.canWritePreferences)
+            Toggle("Spør før sending til en terminal", isOn: Binding(
+                get: { model.preferences.askBeforeSendingToTerminal },
+                set: { model.setAskBeforeSendingToTerminal($0) }
+            ))
+            .disabled(!model.canWritePreferences)
+            .accessibilityIdentifier("settings.askBeforeSending")
+            Text("En sending viser mottaker og tekst før noe skrives. Agentenes egne tillatelsesspørsmål besvares aldri automatisk.")
+                .font(DS.Font.caption)
+                .foregroundStyle(DS.Color.secondaryInk)
+            Toggle("Les opp «venter på input»", isOn: Binding(
+                get: { model.preferences.speakWaitingForInputStatus },
+                set: { model.setSpeakWaitingForInputStatus($0) }
+            )).disabled(!model.canWritePreferences)
+            Text("Bruker kun lokal macOS tale. Av som standard.")
+                .font(DS.Font.caption)
+                .foregroundStyle(DS.Color.secondaryInk)
+            directorySetting
+        }
+        .toggleStyle(TrailingSwitchToggleStyle())
+    }
+
+    private var providerControls: some View {
+        VStack(alignment: .leading, spacing: DS.Space.sm) {
+            HStack(spacing: DS.Space.xs) {
+                Text("\(model.installedKnownAgentIDs.count) av \(model.knownAgents.count) CLI-er installert")
+                    .font(DS.Font.caption)
+                    .foregroundStyle(DS.Color.secondaryInk)
+                Spacer(minLength: DS.Space.xs)
+                Button("Skann på nytt") { model.refreshInstalledKnownAgents() }
+                    .buttonStyle(.lbSecondary)
             }
-            Section("Agent catalog") {
-                Text("Known CLIs: \(model.knownAgents.count) · installed: \(model.installedKnownAgentIDs.count)")
-                    .font(Typography.caption).foregroundStyle(Palette.secondaryInk)
-                Button("Rescan installed CLIs") {
-                    model.refreshInstalledKnownAgents()
+
+            VStack(alignment: .leading, spacing: DS.Space.xs) {
+                ForEach(NewTerminalDraft.featuredAgentIDs, id: \.self) { agentID in
+                    providerRow(agentID)
                 }
-                ForEach(model.knownAgents, id: \.id) { agent in
-                    HStack {
-                        Text(agent.displayName)
-                        Spacer()
-                        Text(agent.executableName).font(Typography.caption).foregroundStyle(Palette.secondaryInk)
-                        if model.installedKnownAgentIDs.contains(agent.id) {
-                            Text("Installed").font(Typography.caption).foregroundStyle(Palette.accent)
-                        }
-                    }
-                }
             }
-            Section("Custom executable") {
-                TextField("Name", text: $customName)
-                TextField("Absolute executable path", text: $customPath)
-                TextField("Args (space-separated)", text: $customArgs)
-                Button("Add custom executable") {
+
+            Text("Egendefinerte agenter").sectionCaptionStyle()
+            TextField("Navn", text: $customName)
+            TextField("Absolutt sti til kjørbar fil", text: $customPath)
+            TextField("Argumenter (atskilt med mellomrom)", text: $customArgs)
+            HStack(spacing: DS.Space.xs) {
+                Button("Legg til egendefinert agent") {
                     let executable = CustomAgentExecutable(
                         displayName: customName,
                         executablePath: customPath,
@@ -267,25 +327,35 @@ public struct SettingsPanel: View {
                         customPath = ""
                         customArgs = ""
                     }
-                }.disabled(!model.canWritePreferences)
-                ForEach(model.customExecutables, id: \.id) { executable in
-                    HStack {
-                        Text(executable.displayName)
-                        Spacer()
-                        Text(executable.executablePath).font(Typography.caption).foregroundStyle(Palette.secondaryInk)
-                        Button("Remove") { model.removeCustomExecutable(id: executable.id) }
-                    }
+                }
+                .buttonStyle(.lbSecondary)
+                .disabled(!model.canWritePreferences)
+                Spacer(minLength: 0)
+            }
+            ForEach(model.customExecutables, id: \.id) { executable in
+                HStack(spacing: DS.Space.xs) {
+                    Text(executable.displayName).font(DS.Font.body)
+                    Text(executable.executablePath)
+                        .font(DS.Font.caption)
+                        .foregroundStyle(DS.Color.secondaryInk)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: DS.Space.xs)
+                    Button("Fjern") { model.removeCustomExecutable(id: executable.id) }
+                        .buttonStyle(.lbGhost)
                 }
             }
-            Section("Account profiles") {
-                TextField("Profile name", text: $profileName)
-                Picker("Agent", selection: $profileAgentID) {
-                    ForEach((model.knownAgents.map(\.id) + model.customExecutables.map(\.id)).sorted(), id: \.self) {
-                        Text($0).tag($0)
-                    }
+
+            Text("Kontoer").sectionCaptionStyle()
+            TextField("Profilnavn", text: $profileName)
+            Picker("Agent", selection: $profileAgentID) {
+                ForEach((model.knownAgents.map(\.id) + model.customExecutables.map(\.id)).sorted(), id: \.self) {
+                    Text($0).tag($0)
                 }
-                TextField("Environment (KEY=VALUE, comma-separated)", text: $profileEnvironment)
-                Button("Add profile") {
+            }
+            TextField("Miljø (NØKKEL=VERDI, atskilt med komma)", text: $profileEnvironment)
+            HStack(spacing: DS.Space.xs) {
+                Button("Legg til profil") {
                     let profile = AgentAccountProfile(
                         name: profileName, agentID: profileAgentID,
                         environment: parseEnvironment(profileEnvironment))
@@ -293,46 +363,141 @@ public struct SettingsPanel: View {
                         profileName = ""
                         profileEnvironment = ""
                     }
-                }.disabled(!model.canWritePreferences)
-                ForEach(model.accountProfiles, id: \.id) { profile in
-                    HStack {
-                        Text(profile.name)
-                        Spacer()
-                        Text(profile.agentID).font(Typography.caption).foregroundStyle(Palette.secondaryInk)
-                        Button("Remove") { model.removeAccountProfile(id: profile.id) }
-                    }
                 }
+                .buttonStyle(.lbSecondary)
+                .disabled(!model.canWritePreferences)
+                Spacer(minLength: 0)
             }
-            if let errorMessage = model.errorMessage {
-                Text(errorMessage).font(Typography.caption).foregroundStyle(Palette.status(.error))
-                    .textSelection(.enabled)
-                if !model.canWritePreferences {
-                    Button("Reset preferences") { model.resetPreferences() }
+            ForEach(model.accountProfiles, id: \.id) { profile in
+                HStack(spacing: DS.Space.xs) {
+                    Text(profile.name).font(DS.Font.body)
+                    Text(profile.agentID)
+                        .font(DS.Font.caption)
+                        .foregroundStyle(DS.Color.secondaryInk)
+                    Spacer(minLength: DS.Space.xs)
+                    Button("Fjern") { model.removeAccountProfile(id: profile.id) }
+                        .buttonStyle(.lbGhost)
                 }
-            }
-            if let customError = model.customExecutableError {
-                Text(customError).font(Typography.caption).foregroundStyle(Palette.status(.error))
-            }
-            if let profileError = model.profileError {
-                Text(profileError).font(Typography.caption).foregroundStyle(Palette.status(.error))
             }
         }
-        .formStyle(.grouped)
-        .tint(Palette.accent)
-        .padding(Spacing.sm)
+    }
+
+    private func providerRow(_ agentID: String) -> some View {
+        HStack(spacing: DS.Space.xs) {
+            ProviderBadge(agentID: agentID, size: DS.Space.md + DS.Space.xxs)
+            VStack(alignment: .leading, spacing: DS.Space.xxs) {
+                Text(providerTitle(agentID))
+                    .font(DS.Font.bodyEmphasis)
+                    .foregroundStyle(DS.Color.ink)
+                Text(installedLabel(agentID))
+                    .font(DS.Font.caption)
+                    .foregroundStyle(model.installedKnownAgentIDs.contains(agentID) ? DS.Color.status(.done) : DS.Color.mutedInk)
+            }
+            Spacer(minLength: DS.Space.xs)
+            if let remembered = model.preferences.lastModelByAgentID[agentID] {
+                Text(remembered)
+                    .font(DS.Font.mono)
+                    .foregroundStyle(DS.Color.secondaryInk)
+                    .lineLimit(1)
+            } else {
+                Text("Standardmodell")
+                    .font(DS.Font.caption)
+                    .foregroundStyle(DS.Color.mutedInk)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("settings.provider.\(agentID)")
+    }
+
+    private func providerTitle(_ agentID: String) -> String {
+        if agentID == OrchestratorKind.agentID { return OrchestratorKind.title }
+        return model.knownAgents.first { $0.id == agentID }?.displayName ?? agentID
+    }
+
+    private func installedLabel(_ agentID: String) -> String {
+        if agentID == OrchestratorKind.agentID { return "Innebygd" }
+        if agentID == "shell" { return "Alltid tilgjengelig" }
+        return model.installedKnownAgentIDs.contains(agentID) ? "Installert" : "Ikke installert"
+    }
+
+    private var appearanceNote: some View {
+        VStack(alignment: .leading, spacing: DS.Space.xxs) {
+            Text("Følger macOS-utseendet")
+                .font(DS.Font.bodyEmphasis)
+                .foregroundStyle(DS.Color.ink)
+            Text("Lyst og mørkt tema, statusfarger og materialer tilpasser seg systeminnstillingene. Reduser bevegelse slår av pulsing og glidende overganger.")
+                .font(DS.Font.caption)
+                .foregroundStyle(DS.Color.secondaryInk)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var usageControls: some View {
+        VStack(alignment: .leading, spacing: DS.Space.xs) {
+            HStack(spacing: DS.Space.xs) {
+                VStack(alignment: .leading, spacing: DS.Space.xxs) {
+                    Text("Bruk og status-tid")
+                        .font(DS.Font.bodyEmphasis)
+                        .foregroundStyle(DS.Color.ink)
+                    Text("Prompts, cron-kjøringer og tid per status, kun lagret lokalt.")
+                        .font(DS.Font.caption)
+                        .foregroundStyle(DS.Color.secondaryInk)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: DS.Space.xs)
+                Button("Åpne Bruk") { onOpenUsage?() }
+                    .buttonStyle(.lbSecondary)
+                    .disabled(onOpenUsage == nil)
+                    .accessibilityIdentifier("settings.openUsage")
+            }
+            Text("Kun lokalt · ingen telemetri")
+                .font(DS.Font.caption)
+                .foregroundStyle(DS.Color.mutedInk)
+        }
+    }
+
+    @ViewBuilder private var errorLines: some View {
+        if let errorMessage = model.errorMessage {
+            VStack(alignment: .leading, spacing: DS.Space.xs) {
+                Text(errorMessage)
+                    .font(DS.Font.caption)
+                    .foregroundStyle(DS.Color.status(.error))
+                    .textSelection(.enabled)
+                if !model.canWritePreferences {
+                    Button("Nullstill preferanser") { model.resetPreferences() }
+                        .buttonStyle(.lbSecondary)
+                }
+            }
+        }
+        if let customError = model.customExecutableError {
+            Text(customError).font(DS.Font.caption).foregroundStyle(DS.Color.status(.error))
+        }
+        if let profileError = model.profileError {
+            Text(profileError).font(DS.Font.caption).foregroundStyle(DS.Color.status(.error))
+        }
     }
 
     @ViewBuilder private var directorySetting: some View {
-        LabeledContent("Default working folder") {
-            HStack {
-                Text(model.preferences.defaultWorkingDirectory?.path ?? "Home folder")
-                    .font(Typography.caption).foregroundStyle(Palette.secondaryInk).lineLimit(1)
+        HStack(spacing: DS.Space.xs) {
+            VStack(alignment: .leading, spacing: DS.Space.xxs) {
+                Text("Standard arbeidsmappe")
+                    .font(DS.Font.bodyEmphasis)
+                    .foregroundStyle(DS.Color.ink)
+                Text(model.preferences.defaultWorkingDirectory?.path ?? "Hjemmemappe")
+                    .font(DS.Font.caption)
+                    .foregroundStyle(DS.Color.secondaryInk)
+                    .lineLimit(1)
                     .truncationMode(.middle)
-                Button("Choose…") { chooseDirectory() }.disabled(!model.canWritePreferences)
-                if model.preferences.defaultWorkingDirectory != nil {
-                    Button("Reset") { model.setDefaultWorkingDirectory(nil) }.disabled(!model.canWritePreferences)
-                        .accessibilityLabel("Reset default working folder")
-                }
+            }
+            Spacer(minLength: DS.Space.xs)
+            Button("Velg …") { chooseDirectory() }
+                .buttonStyle(.lbSecondary)
+                .disabled(!model.canWritePreferences)
+            if model.preferences.defaultWorkingDirectory != nil {
+                Button("Nullstill") { model.setDefaultWorkingDirectory(nil) }
+                    .buttonStyle(.lbGhost)
+                    .disabled(!model.canWritePreferences)
+                    .accessibilityLabel("Nullstill standard arbeidsmappe")
             }
         }
     }
@@ -360,5 +525,20 @@ public struct SettingsPanel: View {
             if !key.isEmpty { parsed[key] = val }
         }
         return parsed
+    }
+}
+
+/// Settings row: label on the left, switch pinned to the trailing edge.
+struct TrailingSwitchToggleStyle: ToggleStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: DS.Space.sm) {
+            configuration.label
+                .foregroundStyle(DS.Color.ink)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Toggle(isOn: configuration.$isOn) { configuration.label }
+                .labelsHidden()
+                .toggleStyle(.switch)
+        }
+        .padding(.vertical, 2)
     }
 }

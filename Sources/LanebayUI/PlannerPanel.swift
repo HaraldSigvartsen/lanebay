@@ -280,6 +280,19 @@ public final class PlannerPanelModel {
         }
     }
 
+    /// The console a typed action targets, so the panel can show its provider badge.
+    public func consoleTitle(for nodeID: UUID) -> String? {
+        workspace?.nodes.first { $0.id == nodeID }?.title
+    }
+
+    public func consoleAgentID(for nodeID: UUID) -> String? {
+        workspace?.nodes.first { $0.id == nodeID }?.agentID
+    }
+
+    public func groupName(for groupID: UUID) -> String? {
+        workspace?.groups.first { $0.id == groupID }?.name
+    }
+
     public func approveAction(at index: Int) {
         guard index >= 0, index < actionStates.count else { return }
         actionStates[index].approved = true
@@ -401,105 +414,274 @@ public final class PlannerPanelModel {
     }
 }
 
+/// The Orkestrering panel: request, plan and typed steps. Header and close come from `PanelHost`.
 public struct PlannerPanel: View {
     @Bindable private var model: PlannerPanelModel
-    public init(model: PlannerPanelModel) {
+    @FocusState private var requestFocused: Bool
+    private let header: AnyView?
+
+    public init(model: PlannerPanelModel, header: AnyView? = nil) {
         self.model = model
+        self.header = header
     }
 
     public var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: Spacing.md) {
-                GroupBox("Planner backend") {
-                    VStack(alignment: .leading, spacing: Spacing.xs) {
-                        Picker("Backend", selection: $model.backendKind) {
-                            Text("CLI").tag(PlannerBackendKind.cli)
-                            Text("HTTP (disabled by default)").tag(PlannerBackendKind.http)
-                        }.pickerStyle(.menu)
-                        if model.backendKind == .cli {
-                            Picker("Planner CLI", selection: $model.selectedCLIOptionID) {
-                                ForEach(model.availableCLIOptions) { option in
-                                    Text(option.title).tag(option.id)
-                                }
-                            }
-                            .pickerStyle(.menu)
-                        } else {
-                            Toggle("Allow HTTP backend", isOn: $model.allowHTTPBackend)
-                            Text("HTTP backend never reads API keys from files/preferences; it only reads Keychain.")
-                                .font(Typography.caption)
-                                .foregroundStyle(Palette.mutedInk)
-                        }
-                    }
+            VStack(alignment: .leading, spacing: DS.Space.md) {
+                if let header {
+                    header
+                    Divider().padding(.vertical, DS.Space.xs)
                 }
-
-                GroupBox("Request") {
-                    VStack(alignment: .leading, spacing: Spacing.xs) {
-                        TextEditor(text: $model.plannerPrompt)
-                            .font(.system(size: 12, weight: .regular, design: .monospaced))
-                            .frame(minHeight: 96)
-                            .overlay(RoundedRectangle(cornerRadius: Spacing.radiusSmall).stroke(Palette.border))
-                        Button("Generate plan") {
-                            Task { await model.generatePlan() }
-                        }
-                        .disabled(model.isRunning)
-                    }
-                }
-
+                backendSection
+                requestSection
                 if let plan = model.generatedPlan {
-                    GroupBox("Typed actions (approval required per action)") {
-                        VStack(alignment: .leading, spacing: Spacing.sm) {
-                            ForEach(Array(plan.actions.enumerated()), id: \.offset) { index, action in
-                                actionRow(index: index, action: action)
-                            }
-                        }
-                    }
+                    stepsSection(plan)
+                } else {
+                    EmptyStateView(
+                        symbol: "point.3.connected.trianglepath.dotted",
+                        title: "Ingen plan ennå",
+                        message: "Beskriv en forespørsel og lag en plan. Hvert steg godkjennes før det kjøres.",
+                        actionTitle: "Skriv en forespørsel",
+                        action: { requestFocused = true },
+                        identifier: "planner.empty"
+                    )
+                    .padding(.vertical, DS.Space.lg)
                 }
-
-                if !model.rawPlannerOutput.isEmpty {
-                    GroupBox("Raw planner output") {
-                        Text(model.rawPlannerOutput)
-                            .font(.system(size: 11, weight: .regular, design: .monospaced))
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
-
-                if let status = model.statusMessage {
-                    Text(status).font(Typography.caption).foregroundStyle(Palette.accent)
-                }
-                if let error = model.errorMessage {
-                    Text(error).font(Typography.caption).foregroundStyle(Palette.status(.error)).textSelection(.enabled)
-                }
+                if !model.rawPlannerOutput.isEmpty { rawOutputSection }
+                statusLines
             }
-            .padding(Spacing.sm)
+            .padding(DS.Space.md)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
     }
 
-    @ViewBuilder
-    private func actionRow(index: Int, action: PlannerAction) -> some View {
-        let state = model.actionStates[index]
-        VStack(alignment: .leading, spacing: Spacing.xxs) {
-            Text("\(index + 1). \(label(for: action))").font(Typography.bodyEmphasis)
-            HStack(spacing: Spacing.xs) {
-                if !state.approved {
-                    Button("Approve") { model.approveAction(at: index) }
-                } else if !state.executed {
-                    Button("Execute") { Task { await model.executeApprovedAction(at: index) } }
-                } else {
-                    Text("Executed").font(Typography.caption).foregroundStyle(Palette.secondaryInk)
+    // MARK: - Planlegger
+
+    private var backendSection: some View {
+        VStack(alignment: .leading, spacing: DS.Space.xs) {
+            Text("Planlegger").sectionCaptionStyle()
+            HStack(spacing: DS.Space.xs) {
+                Menu {
+                    ForEach(PlannerBackendKind.allCases) { kind in
+                        Button(kind.panelTitle) { model.backendKind = kind }
+                    }
+                } label: {
+                    capsuleLabel(model.backendKind.panelTitle, symbol: "cpu")
                 }
-                switch state.outcome {
-                case let .success(message):
-                    Text(message).font(Typography.caption).foregroundStyle(Palette.accent)
-                case let .failure(message):
-                    Text(message).font(Typography.caption).foregroundStyle(Palette.status(.error))
-                case .none:
-                    EmptyView()
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .accessibilityIdentifier("planner.backend")
+                .accessibilityLabel("Planlegger-backend: \(model.backendKind.panelTitle)")
+
+                if model.backendKind == .cli {
+                    Menu {
+                        ForEach(model.availableCLIOptions) { option in
+                            Button(option.title) { model.selectedCLIOptionID = option.id }
+                        }
+                    } label: {
+                        capsuleLabel(selectedCLITitle, symbol: "terminal")
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .disabled(model.availableCLIOptions.isEmpty)
+                    .accessibilityIdentifier("planner.cli")
+                    .accessibilityLabel("Planlegger-CLI: \(selectedCLITitle)")
+                }
+                Spacer(minLength: 0)
+            }
+            if model.backendKind == .http {
+                Toggle("Tillat HTTP-backend", isOn: $model.allowHTTPBackend)
+                    .toggleStyle(.switch)
+                Text("HTTP-backenden leser API-nøkler kun fra Keychain, aldri fra filer eller preferanser.")
+                    .font(DS.Font.caption)
+                    .foregroundStyle(DS.Color.mutedInk)
+            }
+        }
+    }
+
+    private var selectedCLITitle: String {
+        model.availableCLIOptions.first { $0.id == model.selectedCLIOptionID }?.title ?? "Ingen CLI"
+    }
+
+    private func capsuleLabel(_ title: String, symbol: String) -> some View {
+        HStack(spacing: DS.Space.xxs) {
+            Image(systemName: symbol).font(DS.Font.caption)
+            Text(title).font(DS.Font.headline)
+            Image(systemName: "chevron.down").font(DS.Font.caption)
+        }
+        .foregroundStyle(DS.Color.accentInk)
+        .padding(.horizontal, DS.Space.sm)
+        .padding(.vertical, DS.Space.xs)
+        .background(DS.Color.accentSoft, in: Capsule())
+        .overlay(Capsule().strokeBorder(DS.Color.accent.opacity(0.35), lineWidth: 1))
+    }
+
+    // MARK: - Forespørsel
+
+    private var requestSection: some View {
+        VStack(alignment: .leading, spacing: DS.Space.xs) {
+            Text("Forespørsel").sectionCaptionStyle()
+            ZStack(alignment: .topLeading) {
+                TextEditor(text: $model.plannerPrompt)
+                    .font(DS.Font.body)
+                    .scrollContentBackground(.hidden)
+                    .padding(DS.Space.xs)
+                    .focused($requestFocused)
+                    .accessibilityIdentifier("planner.request")
+                if model.plannerPrompt.isEmpty {
+                    Text("Beskriv hva agentene skal gjøre …")
+                        .font(DS.Font.body)
+                        .foregroundStyle(DS.Color.mutedInk)
+                        .padding(.horizontal, DS.Space.sm + DS.Space.xxs)
+                        .padding(.vertical, DS.Space.xs)
+                        .allowsHitTesting(false)
+                }
+            }
+            .frame(minHeight: DS.Space.xl * 3)
+            .glass(radius: DS.Radius.control)
+
+            HStack(spacing: DS.Space.sm) {
+                AXActionButton(
+                    title: "Lag plan",
+                    systemImage: "wand.and.stars",
+                    identifier: "planner.generate",
+                    accessibilityLabel: "Lag plan",
+                    enabled: !model.isRunning,
+                    highlighted: false,
+                    primary: true,
+                    compact: false
+                ) { Task { await model.generatePlan() } }
+                .frame(width: DS.Space.xl * 4, height: DS.Space.lg + DS.Space.xxs)
+                if model.isRunning {
+                    Text("Lager plan …")
+                        .font(DS.Font.caption)
+                        .foregroundStyle(DS.Color.secondaryInk)
+                }
+                Spacer(minLength: 0)
+            }
+        }
+    }
+
+    // MARK: - Steg
+
+    private func stepsSection(_ plan: PlannerPlan) -> some View {
+        VStack(alignment: .leading, spacing: DS.Space.xs) {
+            Text("Steg").sectionCaptionStyle()
+            VStack(spacing: DS.Space.xs) {
+                ForEach(Array(plan.actions.enumerated()), id: \.offset) { index, action in
+                    stepCard(index: index, action: action)
                 }
             }
         }
-        .padding(Spacing.xs)
-        .background(Palette.raisedSurface, in: RoundedRectangle(cornerRadius: Spacing.radiusSmall))
+    }
+
+    private func stepCard(index: Int, action: PlannerAction) -> some View {
+        let state = model.actionStates[index]
+        let presentation = PlannerStepPresentation.status(for: state)
+        return VStack(alignment: .leading, spacing: DS.Space.xs) {
+            HStack(alignment: .top, spacing: DS.Space.xs) {
+                Text("\(index + 1)")
+                    .font(DS.Font.caption)
+                    .foregroundStyle(DS.Color.accentInk)
+                    .frame(width: DS.Space.lg, height: DS.Space.lg)
+                    .background(DS.Color.accentSoft, in: Circle())
+                VStack(alignment: .leading, spacing: DS.Space.xxs) {
+                    Text(label(for: action))
+                        .font(DS.Font.bodyEmphasis)
+                        .foregroundStyle(DS.Color.ink)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: DS.Space.xxs) {
+                        ProviderBadge(agentID: assigneeAgentID(for: action), size: DS.Space.md + DS.Space.xxs)
+                        Text(assigneeTitle(for: action))
+                            .font(DS.Font.caption)
+                            .foregroundStyle(DS.Color.secondaryInk)
+                            .lineLimit(1)
+                    }
+                }
+                Spacer(minLength: DS.Space.xs)
+                StatusPill(kind: presentation.kind, label: presentation.label)
+            }
+            HStack(spacing: DS.Space.xs) {
+                if !state.approved {
+                    Button("Godkjenn") { model.approveAction(at: index) }
+                        .buttonStyle(.lbSecondary)
+                        .accessibilityIdentifier("planner.approve.\(index)")
+                } else if !state.executed {
+                    Button("Kjør") { Task { await model.executeApprovedAction(at: index) } }
+                        .buttonStyle(.lbPrimary)
+                        .accessibilityIdentifier("planner.execute.\(index)")
+                }
+                if case let .success(message) = state.outcome {
+                    Label(message, systemImage: "checkmark.circle")
+                        .font(DS.Font.caption)
+                        .foregroundStyle(DS.Color.status(.done))
+                } else if case let .failure(message) = state.outcome {
+                    Text(message)
+                        .font(DS.Font.caption)
+                        .foregroundStyle(DS.Color.status(.error))
+                        .textSelection(.enabled)
+                }
+            }
+        }
+        .padding(DS.Space.sm)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glass(radius: DS.Radius.control)
+    }
+
+    // MARK: - Output
+
+    private var rawOutputSection: some View {
+        VStack(alignment: .leading, spacing: DS.Space.xs) {
+            Text("Rå output").sectionCaptionStyle()
+            Text(model.rawPlannerOutput)
+                .font(DS.Font.mono)
+                .foregroundStyle(DS.Color.secondaryInk)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(DS.Space.sm)
+                .glass(radius: DS.Radius.control)
+        }
+    }
+
+    @ViewBuilder private var statusLines: some View {
+        if let status = model.statusMessage {
+            Text(status).font(DS.Font.caption).foregroundStyle(DS.Color.accentInk)
+        }
+        if let error = model.errorMessage {
+            Text(error)
+                .font(DS.Font.caption)
+                .foregroundStyle(DS.Color.status(.error))
+                .textSelection(.enabled)
+                .accessibilityIdentifier("planner.error")
+        }
+    }
+
+    // MARK: - Step presentation
+
+    private func assigneeAgentID(for action: PlannerAction) -> String {
+        switch action {
+        case let .sendToConsole(nodeID, _), let .startConsole(nodeID):
+            model.consoleAgentID(for: nodeID) ?? "shell"
+        case .broadcastToGroup, .note:
+            OrchestratorKind.agentID
+        case let .createLoop(_, targetNodeID, _, _, _):
+            model.consoleAgentID(for: targetNodeID) ?? "shell"
+        }
+    }
+
+    private func assigneeTitle(for action: PlannerAction) -> String {
+        switch action {
+        case let .sendToConsole(nodeID, _), let .startConsole(nodeID):
+            model.consoleTitle(for: nodeID) ?? "Ukjent konsoll"
+        case let .broadcastToGroup(groupID, _):
+            model.groupName(for: groupID) ?? "Ukjent gruppe"
+        case .note:
+            "Notat"
+        case let .createLoop(_, targetNodeID, _, _, _):
+            model.consoleTitle(for: targetNodeID) ?? "Ukjent konsoll"
+        }
     }
 
     private func label(for action: PlannerAction) -> String {
@@ -523,6 +705,31 @@ public struct PlannerPanel: View {
         case let .outputMatch(pattern): return "outputMatch(\(pattern))"
         case let .schedule(intervalSeconds): return "schedule(\(intervalSeconds)s)"
         case let .goalCheck(intervalSeconds, goal): return "goalCheck(\(intervalSeconds)s, \(goal))"
+        }
+    }
+}
+
+extension PlannerBackendKind {
+    var panelTitle: String {
+        switch self {
+        case .cli: "CLI"
+        case .http: "HTTP"
+        }
+    }
+}
+
+/// A plan step's pill. Pure so the mapping can be tested without a view.
+enum PlannerStepPresentation {
+    static func status(for state: PlannerActionState) -> (kind: StatusKind, label: String) {
+        switch state.outcome {
+        case .success:
+            return (.done, "Kjørt")
+        case .failure:
+            return (.error, "Feilet")
+        case .none:
+            if state.executed { return (.done, "Kjørt") }
+            if state.approved { return (.running, "Klar til kjøring") }
+            return (.waiting, "Til godkjenning")
         }
     }
 }

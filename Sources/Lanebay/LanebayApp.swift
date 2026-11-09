@@ -29,6 +29,18 @@ struct LanebayApp: App {
         Button("New Terminal") { board.beginNewTerminal() }
           .keyboardShortcut("t", modifiers: .command)
       }
+      CommandMenu("Go") {
+        Button("Agenter") { board.requestNavigation(.board) }
+          .keyboardShortcut("1", modifiers: .command)
+        Button("Orkestrering") { board.requestNavigation(.panel(.planner)) }
+          .keyboardShortcut("2", modifiers: .command)
+        Button("Cron") { board.requestNavigation(.panel(.loops)) }
+          .keyboardShortcut("3", modifiers: .command)
+        Button("Aktivitet") { board.requestNavigation(.panel(.activity)) }
+          .keyboardShortcut("4", modifiers: .command)
+        Button("Innstillinger") { board.requestNavigation(.panel(.settings)) }
+          .keyboardShortcut("5", modifiers: .command)
+      }
       CommandMenu("Canvas") {
         Button("Zoom In") { board.setZoom(board.zoom * 1.1) }
           .keyboardShortcut("+", modifiers: .command)
@@ -57,6 +69,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   let updaterController: SPUStandardUpdaterController?
   private var hookServer: HookServer?
   private var hookTask: Task<Void, Never>?
+  private var controlServer: ControlServer?
+  private var agentControl: AgentControlService?
 
   override init() {
     if SparkleConfiguration.isConfigured(info: Bundle.main.infoDictionary ?? [:]) {
@@ -76,6 +90,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // A later reply never runs: terminate's nested event loop does not drain the main actor.
     // Save synchronously and exit. Closing the process hangs up the console PTYs.
     do { try board.saveNow() } catch { return .terminateCancel }
+    controlServer?.stop()
     return .terminateNow
   }
 
@@ -113,6 +128,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.async { NSApp.terminate(nil) }
       }
     }
+    startAgentControl()
     Task { @MainActor in
       _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])
       do {
@@ -129,7 +145,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   }
 }
 
-/// Command-T opens New terminal even when a console is focused.
+extension AppDelegate {
+  /// Starts the localhost-only control API (`lanebay` CLI) once the board exists.
+  func startAgentControl() {
+    Task { @MainActor in
+      for _ in 0..<50 where self.board == nil { try? await Task.sleep(for: .milliseconds(100)) }
+      guard let board = self.board, self.controlServer == nil else { return }
+      let service = AgentControlService(driver: board, shellHooks: AgentTaskContract.shellSupportsHook())
+      service.onFinish = { [weak board] record, state in
+        board?.recordAgentHandoff(record, state: state)
+      }
+      service.wireControl = board
+      service.startTicking()
+      let server = ControlServer(paths: ControlPaths.live(homeDirectory: LaunchIsolation.homeDirectory())) { request in
+        await service.handle(request)
+      }
+      do {
+        try server.start()
+        self.agentControl = service
+        self.controlServer = server
+      } catch {
+        board.errorMessage = "Agent control API unavailable: \(error.localizedDescription)"
+      }
+    }
+  }
+}
+
+/// Command-T and Command-1…5 open their place even when a console is focused.
 @MainActor
 enum NewTerminalShortcut {
   private static var installed = false
@@ -145,9 +187,25 @@ enum NewTerminalShortcut {
 
   static func handle(_ event: NSEvent) -> NSEvent? {
     let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-    guard event.keyCode == 17, flags == .command else { return event }
-    board?.beginNewTerminal()
+    guard flags == .command else { return event }
+    if event.keyCode == 17 {
+      board?.beginNewTerminal()
+      return nil
+    }
+    guard let navigation = navigation(for: event) else { return event }
+    board?.requestNavigation(navigation)
     return nil
+  }
+
+  private static func navigation(for event: NSEvent) -> BoardNavigation? {
+    switch event.charactersIgnoringModifiers {
+    case "1": .board
+    case "2": .panel(.planner)
+    case "3": .panel(.loops)
+    case "4": .panel(.activity)
+    case "5": .panel(.settings)
+    default: nil
+    }
   }
 }
 
@@ -412,7 +470,15 @@ enum LaunchSnapshot {
   }
 }
 
-/// Same-process accessibility walk. Runs off the main actor so the app can answer AX requests.
+/// Same-process accessibility walk, confined to the main actor. A same-process
+/// AXUIElement attribute fetch does not round-trip through the main run loop —
+/// HIServices runs it inline on the calling thread — and SwiftUI/AppKit
+/// accessibility nodes are main-thread-confined, so an off-main walk races the
+/// main thread's node teardown and crashes (SIGSEGV, pointer-authentication
+/// failure inside AccessibilityNode.accessibilityIdentifier, flow run of
+/// 2026-10-28 00:46: agent/screens/20261028-004557, crash report
+/// Lanebay-2026-10-28-004609.ips). The diagnostics sample records main=
+/// evidence for the ax.state line; main=0 is that regression's signature.
 enum AccessibilityProbe {
   struct Hit: Sendable {
     var name: String
@@ -425,38 +491,75 @@ enum AccessibilityProbe {
   }
 
   static func hits(pid: pid_t) async -> Probe {
-    await Task.detached(priority: .userInitiated) {
+    await MainActor.run {
       collect(pid: pid, deadline: Date().addingTimeInterval(2.5))
-    }.value
+    }
   }
 
   static func press(pid: pid_t, names: [String], actions: [String] = [kAXPressAction as String, "AXShowMenu"]) async -> Bool {
     let wanted = names
     let actionNames = actions
-    return await Task.detached(priority: .userInitiated) {
+    let sample = await MainActor.run {
       let application = AXUIElementCreateApplication(pid)
       AXUIElementSetMessagingTimeout(application, 0.6)
-      guard let element = findMatch(application, names: wanted, deadline: Date().addingTimeInterval(4)) else {
-        return false
+      var children: CFTypeRef?
+      let childrenError = AXUIElementCopyAttributeValue(application, "AXChildren" as CFString, &children).rawValue
+      var windowList: CFTypeRef?
+      let windowsError = AXUIElementCopyAttributeValue(application, "AXWindows" as CFString, &windowList).rawValue
+      let windowCount = (windowList as? [AXUIElement])?.count ?? -1
+      var walked = 0
+      var trace: [String] = []
+      let element = findMatch(
+        application, names: wanted, deadline: Date().addingTimeInterval(4), walked: &walked, trace: &trace)
+      var statuses: [Int] = []
+      if let element {
+        for action in actionNames {
+          let result = AXUIElementPerformAction(element, action as CFString)
+          statuses.append(Int(result.rawValue))
+          if result == .success { break }
+        }
       }
-      for action in actionNames {
-        if AXUIElementPerformAction(element, action as CFString) == .success { return true }
-      }
-      return false
-    }.value
+      return AXProbeDiagnostics.Sample(
+        target: wanted.first ?? "?",
+        childrenError: Int(childrenError),
+        windowsError: Int(windowsError),
+        windowCount: windowCount,
+        walked: walked,
+        matched: element != nil,
+        actionStatuses: statuses,
+        trace: trace,
+        mainThread: Thread.isMainThread)
+    }
+    record(sample)
+    return sample.pressed
+  }
+
+  private static let recordLock = NSLock()
+  nonisolated(unsafe) private static var lastSample: AXProbeDiagnostics.Sample?
+
+  private static func record(_ sample: AXProbeDiagnostics.Sample) {
+    recordLock.lock()
+    lastSample = sample
+    recordLock.unlock()
+  }
+
+  static func lastDiagnosticsLine() -> String? {
+    recordLock.lock()
+    defer { recordLock.unlock() }
+    return lastSample?.reportLine
   }
 
   static func adjust(pid: pid_t, names: [String], increment: Bool) async -> Bool {
     let wanted = names
     let action = increment ? kAXIncrementAction as String : kAXDecrementAction as String
-    return await Task.detached(priority: .userInitiated) {
+    return await MainActor.run {
       let application = AXUIElementCreateApplication(pid)
       AXUIElementSetMessagingTimeout(application, 0.6)
       guard let element = findAction(application, names: wanted, action: action, deadline: Date().addingTimeInterval(2)) else {
         return false
       }
       return AXUIElementPerformAction(element, action as CFString) == .success
-    }.value
+    }
   }
 
   static func names(pid: pid_t, limit: Int = 80) async -> [String] {
@@ -464,16 +567,18 @@ enum AccessibilityProbe {
     return Array(probe.hits.map(\.name).prefix(limit))
   }
 
-  private static func findMatch(_ element: AXUIElement, names: [String], deadline: Date) -> AXUIElement? {
+  private static func findMatch(
+    _ element: AXUIElement, names: [String], deadline: Date, walked: inout Int, trace: inout [String]
+  ) -> AXUIElement? {
     var matches: [(element: AXUIElement, role: String)] = []
-    var seen = 0
     func walk(_ element: AXUIElement, depth: Int) {
-      guard Date() < deadline, depth < 30, seen < 2500 else { return }
-      seen += 1
+      guard Date() < deadline, depth < 30, walked < 2500 else { return }
+      walked += 1
       AXUIElementSetMessagingTimeout(element, 0.4)
       let identifier = copyString(element, "AXIdentifier")
       let label = copyString(element, "AXDescription") ?? copyString(element, "AXTitle")
       let name = identifier ?? label ?? ""
+      if trace.count < 12 { trace.append("\(depth):\(copyString(element, "AXRole") ?? "?"):\(name.prefix(28))") }
       if names.contains(name) {
         matches.append((element, copyString(element, "AXRole") ?? ""))
       }
