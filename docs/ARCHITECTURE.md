@@ -57,3 +57,9 @@ New and restored consoles are not started until Start is clicked. Shell, Codex, 
 `HookScriptInstaller` writes `~/.lanebay/hooks/lanebay-hook.sh` with mode `0700`. It reads hook JSON from stdin, adds the normalized event supplied by the client config, posts to loopback with a one-second curl timeout, and always exits successfully so telemetry failures do not block an agent. The script requires macOS `/usr/bin/python3`, `/usr/bin/plutil`, and `/usr/bin/curl`.
 
 `ConfigMerger` updates Claude's `settings.json` and Codex's `hooks.json`. Its roots can be injected for isolated use. Entries are marked in the shell command text, allowing removal without adding unsupported configuration keys. Existing valid files are backed up once as `*.lanebay.bak`; malformed or non-object JSON is refused before either config is changed. Repeated install is idempotent. Uninstall removes only marked commands and removes the generated hook script, leaving third-party entries intact. Claude-specific `PermissionRequest`, `Notification`, and `SubagentStop` hooks are not added to Codex. Golden tests use temporary fixture directories and never open real user config files.
+
+## Message delivery
+
+Chat, scheduled messages, and wires share `BoardViewModel.deliverToCard`. Exited terminals are restarted before
+delivery; live terminals retain their process. A reply starts its output offset at zero when the old session
+needs replacement, so output from the new process can complete the chat reply.

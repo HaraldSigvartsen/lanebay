@@ -1505,6 +1505,46 @@ extension BoardViewModelTests {
     await board.shutdown()
   }
 
+  func testDeliveryRestartsAnExitedConsoleAndKeepsALiveSession() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let supervisor = ProcessSupervisor()
+    let board = BoardViewModel(
+      store: WorkspaceStore(rootURL: root.appendingPathComponent("workspaces")),
+      supervisor: supervisor,
+      processEnvironment: ["HOME": root.path, "ZDOTDIR": root.path, "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"],
+      usageTracker: usageTracker(root), settings: settings(root), homeDirectory: root)
+    let id = board.createAndStartConsole(agentID: "shell", cwd: root)
+    let original = try await waitForRunningSession(id, on: board)
+    let ready = await board.ensureRunning(id)
+    XCTAssertTrue(ready)
+    XCTAssertTrue(board.sessions[id] === original, "a live card must keep its process")
+    original.send(Data("printf 'x%.0s' {1..2048}; printf '\\nold-output-done\\n'; exit 0\r".utf8))
+    try await waitForExit(code: 0, session: original, timeout: .seconds(5))
+    let flushed = ContinuousClock.now + .seconds(2)
+    while original.outputByteCount <= 2048 && ContinuousClock.now < flushed {
+      try await Task.sleep(for: .milliseconds(30))
+    }
+    XCTAssertGreaterThan(original.outputByteCount, 2048)
+
+    XCTAssertTrue(board.sendChat("@\(board.handle(for: id)) printf 'delivery-%s\\n' recovered"))
+    let deadline = ContinuousClock.now + .seconds(15)
+    while board.chatWorking[id] != nil && ContinuousClock.now < deadline {
+      try await Task.sleep(for: .milliseconds(30))
+    }
+    XCTAssertNil(board.chatWorking[id], "the reply must finish after restarting the session")
+    XCTAssertEqual(board.chatEntries.last?.status, .done)
+    XCTAssertTrue(board.chatEntries.last?.text.contains("delivery-recovered") == true)
+    if let replacement = board.sessions[id], let sessionID = replacement.sessionID {
+      XCTAssertFalse(replacement === original)
+      XCTAssertTrue(replacement.isRunning)
+      let output = try await waitForScrollback("delivery-recovered", sessionID: sessionID, supervisor: supervisor)
+      XCTAssertTrue(output.contains("delivery-recovered"), "the command must execute, not merely echo")
+    }
+    await board.shutdown()
+  }
+
   func testCommandVPasteReachesLivePTY() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

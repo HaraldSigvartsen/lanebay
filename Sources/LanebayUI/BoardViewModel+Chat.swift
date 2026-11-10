@@ -142,7 +142,8 @@ extension BoardViewModel {
     }
     let entry = ChatEntry(kind: .reply, text: "", from: id, status: .working)
     appendChat(entry)
-    let work = ChatWork(entryID: entry.id, started: Date(), startByte: sessions[id]?.outputByteCount ?? 0, sent: sent)
+    let startByte = sessions[id].map { $0.isRunning && !$0.isClosed ? $0.outputByteCount : 0 } ?? 0
+    let work = ChatWork(entryID: entry.id, started: Date(), startByte: startByte, sent: sent)
     chatWorking[id] = work
     Task { @MainActor [weak self] in await self?.watchReply(id, work: work) }
   }
@@ -240,7 +241,7 @@ extension BoardViewModel {
   /// Starts a stopped card and waits until its program is up and has stopped printing its banner.
   func ensureRunning(_ id: UUID) async -> Bool {
     if let session = sessions[id], session.isRunning, !session.isClosed { return true }
-    if sessions[id] == nil { await startConsole(id) }
+    await restartConsole(id)
     let deadline = Date().addingTimeInterval(25)
     var lastBytes = -1
     var quietSince = Date()
