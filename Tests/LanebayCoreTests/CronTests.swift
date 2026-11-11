@@ -76,7 +76,7 @@ final class CronTests: XCTestCase {
     func testIsDueEveryWithAndWithoutLastRun() {
         let reference = date(2026, 3, 2, 12, 0)
         let job = CronJob(name: "Sjekk", card: "Utvikler", prompt: "Status?",
-                          schedule: .every(minutes: 30))
+                          schedule: .every(minutes: 30), createdAt: reference)
 
         XCTAssertFalse(CronPlanner.isDue(job, now: reference.addingTimeInterval(29 * 60),
                                          reference: reference, calendar: utc))
@@ -100,9 +100,40 @@ final class CronTests: XCTestCase {
     func testIsDueDailyWaitsForTheClockTime() {
         let reference = date(2026, 3, 2, 6, 0)
         let job = CronJob(name: "Morgen", card: "@planlegger", prompt: "Dagplan?",
-                          schedule: .daily(hour: 7, minute: 30))
+                          schedule: .daily(hour: 7, minute: 30), createdAt: reference)
         XCTAssertFalse(CronPlanner.isDue(job, now: date(2026, 3, 2, 7, 29), reference: reference, calendar: utc))
         XCTAssertTrue(CronPlanner.isDue(job, now: date(2026, 3, 2, 7, 30), reference: reference, calendar: utc))
+    }
+
+    func testFirstRunUsesPersistedCreationTimeAcrossAppRestarts() throws {
+        let created = date(2026, 3, 2, 12, 0)
+        let job = CronJob(name: "Sjekk", card: "Utvikler", prompt: "Status?",
+                          schedule: .every(minutes: 30), createdAt: created)
+        let restored = try JSONDecoder().decode(CronJob.self, from: JSONEncoder().encode(job))
+        XCTAssertFalse(CronPlanner.isDue(restored, now: created.addingTimeInterval(29 * 60),
+                                         reference: created.addingTimeInterval(-3600), calendar: utc))
+        XCTAssertTrue(CronPlanner.isDue(restored, now: created.addingTimeInterval(30 * 60),
+                                        reference: created.addingTimeInterval(20 * 60), calendar: utc))
+
+        var ran = restored
+        ran.lastRun = created.addingTimeInterval(30 * 60)
+        XCTAssertFalse(CronPlanner.isDue(ran, now: created.addingTimeInterval(59 * 60),
+                                         reference: created, calendar: utc))
+        XCTAssertTrue(CronPlanner.isDue(ran, now: created.addingTimeInterval(60 * 60),
+                                        reference: created, calendar: utc))
+    }
+
+    func testNewDailyAndWeekdayJobsSkipClockTimeBeforeCreation() {
+        let appStart = date(2026, 3, 6, 6, 0) // Friday
+        let created = date(2026, 3, 6, 9, 0)
+        for (schedule, due) in [(CronSchedule.daily(hour: 8, minute: 0), date(2026, 3, 7, 8, 0)),
+                                (.weekdays(hour: 8, minute: 0), date(2026, 3, 9, 8, 0))] {
+            let job = CronJob(name: "Morgen", card: "Utvikler", prompt: "Status?",
+                              schedule: schedule, createdAt: created)
+            XCTAssertFalse(CronPlanner.isDue(job, now: created, reference: appStart, calendar: utc))
+            XCTAssertFalse(CronPlanner.isDue(job, now: due.addingTimeInterval(-1), reference: appStart, calendar: utc))
+            XCTAssertTrue(CronPlanner.isDue(job, now: due, reference: appStart, calendar: utc))
+        }
     }
 
     // MARK: - validate
@@ -159,5 +190,11 @@ final class CronTests: XCTestCase {
         XCTAssertEqual(decoded.schedule, .every(minutes: 15))
         XCTAssertNil(decoded.lastRun)
         XCTAssertNil(decoded.lastResult)
+        XCTAssertNil(decoded.createdAt)
+        let reference = date(2026, 3, 2, 12, 0)
+        XCTAssertFalse(CronPlanner.isDue(decoded, now: reference.addingTimeInterval(14 * 60),
+                                         reference: reference, calendar: utc))
+        XCTAssertTrue(CronPlanner.isDue(decoded, now: reference.addingTimeInterval(15 * 60),
+                                        reference: reference, calendar: utc))
     }
 }

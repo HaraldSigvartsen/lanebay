@@ -93,4 +93,28 @@ final class ChatBoardTests: XCTestCase {
     _ = board.controlCron(["action": "rm", "id": String(job!.id.uuidString.prefix(8))])
     XCTAssertTrue(board.cronJobs.isEmpty)
   }
+
+  func testNewCronJobWaitsItsIntervalAfterLongAppUptime() throws {
+    let board = board()
+    let card = board.addConsole(agentID: "shell")
+    board.renameConsole(card, to: "Bygger")
+    board.cronReference = Date().addingTimeInterval(-3600)
+    let job = try board.addCronJob(
+      name: "Ny jobb", card: "Bygger", prompt: "echo scheduled", schedule: .every(minutes: 30)
+    ).get()
+
+    board.runDueCronJobs(now: Date().addingTimeInterval(29 * 60))
+
+    XCTAssertNil(board.cronJobs.first { $0.id == job.id }?.lastRun)
+    XCTAssertTrue(board.chatEntries.isEmpty, "A newly added job must not dispatch early")
+    XCTAssertNil(board.sessions[card], "It must not start the target before the interval has elapsed")
+
+    let due = Date().addingTimeInterval(31 * 60)
+    board.runDueCronJobs(now: due)
+    XCTAssertEqual(board.cronJobs.first { $0.id == job.id }?.lastRun, due)
+    XCTAssertEqual(board.cronJobs.first { $0.id == job.id }?.lastResult, "Sendt til Bygger")
+    let chatCount = board.chatEntries.count
+    board.runDueCronJobs(now: due)
+    XCTAssertEqual(board.chatEntries.count, chatCount, "The next tick must not repeat the delivery")
+  }
 }

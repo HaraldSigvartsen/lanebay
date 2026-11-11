@@ -63,3 +63,11 @@ New and restored consoles are not started until Start is clicked. Shell, Codex, 
 Chat, scheduled messages, and wires share `BoardViewModel.deliverToCard`. Exited terminals are restarted before
 delivery; live terminals retain their process. A reply starts its output offset at zero when the old session
 needs replacement, so output from the new process can complete the chat reply.
+
+## Scheduled message timing
+
+New Cron jobs persist their creation time. Until the first run, interval jobs wait the full interval from
+creation, and daily/weekday jobs wait for the next scheduled clock time after creation. Later runs use
+`lastRun`. Older saved jobs without a creation timestamp keep the app-start fallback. An overdue job runs
+once on the next scheduler check while its workspace is active; missed occurrences are not replayed.
+The app must remain open, and scheduling still applies only to the active workspace.

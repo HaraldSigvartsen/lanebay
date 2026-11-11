@@ -24,25 +24,28 @@ public struct CronJob: Codable, Identifiable, Sendable, Equatable {
     public var prompt: String
     public var schedule: CronSchedule
     public var enabled: Bool
+    /// First-run baseline; nil for jobs saved before this field existed.
+    public var createdAt: Date?
     public var lastRun: Date?
     /// Short note about the last run, e.g. "Sendt til Utvikler" / "Fant ikke kortet".
     public var lastResult: String?
 
     public init(id: UUID = UUID(), name: String, card: String, prompt: String,
                 schedule: CronSchedule, enabled: Bool = true,
-                lastRun: Date? = nil, lastResult: String? = nil) {
+                lastRun: Date? = nil, lastResult: String? = nil, createdAt: Date? = Date()) {
         self.id = id
         self.name = name
         self.card = card
         self.prompt = prompt
         self.schedule = schedule
         self.enabled = enabled
+        self.createdAt = createdAt
         self.lastRun = lastRun
         self.lastResult = lastResult
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, card, prompt, schedule, enabled, lastRun, lastResult
+        case id, name, card, prompt, schedule, enabled, createdAt, lastRun, lastResult
     }
 
     /// Tolerant decoding: a missing name becomes "Jobb", a missing job is enabled,
@@ -56,6 +59,7 @@ public struct CronJob: Codable, Identifiable, Sendable, Equatable {
         self.schedule = (try? c.decodeIfPresent(CronSchedule.self, forKey: .schedule))
             ?? .every(minutes: 60)
         self.enabled = (try? c.decodeIfPresent(Bool.self, forKey: .enabled)) ?? true
+        self.createdAt = try? c.decodeIfPresent(Date.self, forKey: .createdAt)
         self.lastRun = try? c.decodeIfPresent(Date.self, forKey: .lastRun)
         self.lastResult = try? c.decodeIfPresent(String.self, forKey: .lastResult)
     }
@@ -85,11 +89,11 @@ public enum CronPlanner {
     }
 
     /// Due when the job is enabled and its next fire time is at or before `now`.
-    /// A job that has never run is measured from `reference` (when it was added / app start).
+    /// A job that has never run is measured from creation; legacy jobs use app start (`reference`).
     public static func isDue(_ job: CronJob, now: Date, reference: Date,
                              calendar: Calendar = .current) -> Bool {
         guard job.enabled else { return false }
-        let base = job.lastRun ?? reference
+        let base = job.lastRun ?? job.createdAt ?? reference
         return nextRun(job.schedule, after: base, calendar: calendar) <= now
     }
 
