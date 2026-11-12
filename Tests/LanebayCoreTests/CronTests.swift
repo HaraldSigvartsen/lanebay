@@ -35,6 +35,20 @@ final class CronTests: XCTestCase {
         XCTAssertNil(CronPlanner.parse("m"))
     }
 
+    func testParseBoundsIntervalsBeforeConvertingHoursToMinutes() {
+        for suffix in ["timer", "hours", "hour", "hrs", "hr", "t", "h"] {
+            XCTAssertEqual(CronPlanner.parse("1\(suffix)"), .every(minutes: 60))
+            XCTAssertEqual(CronPlanner.parse("168\(suffix)"), .every(minutes: 10080))
+            for hours in [0, -1, 169, Int.max / 60, Int.max / 60 + 1, Int.max] {
+                XCTAssertNil(CronPlanner.parse("\(hours)\(suffix)"))
+            }
+        }
+        XCTAssertEqual(CronPlanner.parse("10080m"), .every(minutes: 10080))
+        XCTAssertNil(CronPlanner.parse("10081m"))
+        XCTAssertNil(CronPlanner.parse("\(Int.max)m"))
+        XCTAssertNil(CronPlanner.parse("\(Int.max)0h"))
+    }
+
     // MARK: - describe
 
     func testDescribe() {

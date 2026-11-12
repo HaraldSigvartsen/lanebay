@@ -71,3 +71,7 @@ creation, and daily/weekday jobs wait for the next scheduled clock time after cr
 `lastRun`. Older saved jobs without a creation timestamp keep the app-start fallback. An overdue job runs
 once on the next scheduler check while its workspace is active; missed occurrences are not replayed.
 The app must remain open, and scheduling still applies only to the active workspace.
+
+Cron hour input is checked against the one-week maximum (168 hours) before conversion to minutes.
+Oversized or unrepresentable values return the normal invalid-schedule result, including in the
+settings preview and control API, without adding a job or starting a terminal.

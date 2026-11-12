@@ -94,6 +94,26 @@ final class ChatBoardTests: XCTestCase {
     XCTAssertTrue(board.cronJobs.isEmpty)
   }
 
+  func testCronControlRejectsOversizedIntervalWithoutAddingJob() throws {
+    let board = board()
+    let card = board.addConsole(agentID: "shell")
+    board.renameConsole(card, to: "Bygger")
+    let args = ["action": "add", "card": "Bygger", "text": "echo scheduled", "when": "\(Int.max)h"]
+
+    XCTAssertThrowsError(try board.controlCron(args).get()) { error in
+      XCTAssertTrue(error.localizedDescription.contains("Ugyldig tidsplan"))
+    }
+    XCTAssertTrue(board.cronJobs.isEmpty)
+    XCTAssertTrue(board.chatEntries.isEmpty)
+    XCTAssertNil(board.sessions[card])
+
+    var valid = args
+    valid["when"] = "168h"
+    _ = try board.controlCron(valid).get()
+    XCTAssertEqual(board.cronJobs.count, 1)
+    XCTAssertEqual(board.cronJobs.first?.schedule, .every(minutes: 10080))
+  }
+
   func testNewCronJobWaitsItsIntervalAfterLongAppUptime() throws {
     let board = board()
     let card = board.addConsole(agentID: "shell")

@@ -210,7 +210,8 @@ public enum CronPlanner {
             return n
         }
         for suffix in ["timer", "hours", "hour", "hrs", "hr", "t", "h"] where t.hasSuffix(suffix) {
-            guard let n = Int(t.dropLast(suffix.count)), n > 0 else { return nil }
+            guard let n = Int(t.dropLast(suffix.count)),
+                  (1...(CronJob.minuteRange.upperBound / 60)).contains(n) else { return nil }
             return n * 60
         }
         return nil
