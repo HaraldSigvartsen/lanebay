@@ -114,6 +114,31 @@ final class ChatBoardTests: XCTestCase {
     XCTAssertEqual(board.cronJobs.first?.schedule, .every(minutes: 10080))
   }
 
+  func testRestoredInvalidCronSchedulesNeverDispatchAndRemainRemovable() throws {
+    let board = board()
+    let card = board.addConsole(agentID: "shell")
+    board.renameConsole(card, to: "Bygger")
+    let schedules: [CronSchedule] = [
+      .every(minutes: Int.max), .every(minutes: 0), .every(minutes: 10081),
+      .daily(hour: 24, minute: 0), .weekdays(hour: 8, minute: 60),
+    ]
+    let saved = schedules.map {
+      CronJob(name: "Invalid", card: "Bygger", prompt: "echo scheduled", schedule: $0,
+              createdAt: Date().addingTimeInterval(-8 * 24 * 60 * 60))
+    }
+    let restored = try JSONDecoder().decode([CronJob].self, from: JSONEncoder().encode(saved))
+    board.editWorkspace { $0.cronJobs = restored }
+
+    board.runDueCronJobs(now: Date())
+
+    XCTAssertEqual(board.cronJobs, restored, "Do not delete or alter saved jobs")
+    XCTAssertTrue(board.chatEntries.isEmpty)
+    XCTAssertNil(board.sessions[card], "Invalid schedules must not start a terminal")
+    XCTAssertTrue(try board.controlCron(["action": "list"]).get().contains("Invalid"))
+    for job in restored { board.removeCronJob(job.id) }
+    XCTAssertTrue(board.cronJobs.isEmpty)
+  }
+
   func testNewCronJobWaitsItsIntervalAfterLongAppUptime() throws {
     let board = board()
     let card = board.addConsole(agentID: "shell")

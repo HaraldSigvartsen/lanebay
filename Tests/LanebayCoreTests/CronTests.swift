@@ -65,6 +65,30 @@ final class CronTests: XCTestCase {
                        base.addingTimeInterval(30 * 60))
     }
 
+    func testInvalidSchedulesHaveNoNextRunAndNeverBecomeDue() throws {
+        let base = date(2026, 3, 2, 12, 0)
+        let schedules: [CronSchedule] = [
+            .every(minutes: Int.max), .every(minutes: Int.min),
+            .every(minutes: 0), .every(minutes: 10081),
+            .daily(hour: 24, minute: 0), .daily(hour: 8, minute: -1),
+            .weekdays(hour: -1, minute: 0), .weekdays(hour: 8, minute: 60),
+        ]
+        for schedule in schedules {
+            let job = CronJob(name: "Invalid", card: "Builder", prompt: "echo scheduled",
+                              schedule: schedule, createdAt: base)
+            let restored = try JSONDecoder().decode(CronJob.self, from: JSONEncoder().encode(job))
+            XCTAssertEqual(restored.schedule, schedule, "Keep the saved job available for inspection/removal")
+            XCTAssertEqual(CronPlanner.nextRun(restored.schedule, after: base, calendar: utc), .distantFuture)
+            for now in [base.addingTimeInterval(8 * 24 * 60 * 60), .distantFuture] {
+                XCTAssertFalse(CronPlanner.isDue(restored, now: now, reference: base, calendar: utc))
+            }
+        }
+        for minutes in [1, 10080] {
+            XCTAssertEqual(CronPlanner.nextRun(.every(minutes: minutes), after: base, calendar: utc),
+                           base.addingTimeInterval(TimeInterval(minutes * 60)))
+        }
+    }
+
     func testNextRunDailyCrossesMidnight() {
         let evening = date(2026, 3, 2, 22, 15) // Monday
         XCTAssertEqual(CronPlanner.nextRun(.daily(hour: 7, minute: 30), after: evening, calendar: utc),

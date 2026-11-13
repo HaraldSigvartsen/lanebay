@@ -75,3 +75,8 @@ The app must remain open, and scheduling still applies only to the active worksp
 Cron hour input is checked against the one-week maximum (168 hours) before conversion to minutes.
 Oversized or unrepresentable values return the normal invalid-schedule result, including in the
 settings preview and control API, without adding a job or starting a terminal.
+
+The scheduler also validates restored schedules before calculating their next run. Out-of-range
+intervals and clock times have no next run (`distantFuture`) and are never automatically due.
+Saved jobs remain unchanged and available to list or remove; invalid intervals are not clamped
+to a shorter interval that could send an unintended message.

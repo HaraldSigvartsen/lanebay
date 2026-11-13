@@ -66,12 +66,13 @@ public struct CronJob: Codable, Identifiable, Sendable, Equatable {
 }
 
 public enum CronPlanner {
-    /// Next fire time strictly after `after`, using `calendar` for wall-clock times.
+    /// Next fire time strictly after `after`, or distantFuture for an invalid saved schedule.
     public static func nextRun(_ schedule: CronSchedule, after: Date,
                               calendar: Calendar = .current) -> Date {
+        guard isValid(schedule: schedule) else { return .distantFuture }
         switch schedule {
         case .every(let minutes):
-            return after.addingTimeInterval(TimeInterval(max(1, minutes) * 60))
+            return after.addingTimeInterval(TimeInterval(minutes * 60))
         case .daily(let hour, let minute):
             return nextDaily(hour: hour, minute: minute, after: after, calendar: calendar)
         case .weekdays(let hour, let minute):
@@ -92,7 +93,7 @@ public enum CronPlanner {
     /// A job that has never run is measured from creation; legacy jobs use app start (`reference`).
     public static func isDue(_ job: CronJob, now: Date, reference: Date,
                              calendar: Calendar = .current) -> Bool {
-        guard job.enabled else { return false }
+        guard job.enabled, isValid(schedule: job.schedule) else { return false }
         let base = job.lastRun ?? job.createdAt ?? reference
         return nextRun(job.schedule, after: base, calendar: calendar) <= now
     }
