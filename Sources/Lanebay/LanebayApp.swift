@@ -483,6 +483,7 @@ enum AccessibilityProbe {
   struct Hit: Sendable {
     var name: String
     var frame: NSRect
+    var text: String? = nil
   }
 
   struct Probe: Sendable {
@@ -567,6 +568,11 @@ enum AccessibilityProbe {
     return Array(probe.hits.map(\.name).prefix(limit))
   }
 
+  static func staticTextValues(pid: pid_t) async -> [String] {
+    let probe = await hits(pid: pid)
+    return probe.hits.compactMap(\.text)
+  }
+
   private static func findMatch(
     _ element: AXUIElement, names: [String], deadline: Date, walked: inout Int, trace: inout [String]
   ) -> AXUIElement? {
@@ -639,7 +645,8 @@ enum AccessibilityProbe {
       let identifier = copyString(element, "AXIdentifier")
       let label = copyString(element, "AXDescription") ?? copyString(element, "AXTitle")
       if let name = identifier ?? label, !name.isEmpty, let frame = copyFrame(element) {
-        hits.append(Hit(name: name, frame: frame))
+        let text = copyString(element, "AXRole") == "AXStaticText" ? copyString(element, "AXValue") : nil
+        hits.append(Hit(name: name, frame: frame, text: text))
       }
       for child in copyChildren(element) {
         walk(child, depth: depth + 1)

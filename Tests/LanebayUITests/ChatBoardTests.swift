@@ -114,6 +114,36 @@ final class ChatBoardTests: XCTestCase {
     XCTAssertEqual(board.cronJobs.first?.schedule, .every(minutes: 10080))
   }
 
+  func testCronHistoryRetainsScheduledAndManualAttemptsAcrossSave() throws {
+    let board = board()
+    let card = board.addConsole(agentID: "shell")
+    board.renameConsole(card, to: "Bygger")
+    let job = try board.addCronJob(name: "Historikk", card: "Bygger", prompt: "echo scheduled",
+                                   schedule: .every(minutes: 1)).get()
+    let args = ["action": "history", "id": String(job.id.uuidString.prefix(8))]
+    XCTAssertEqual(try board.controlCron(args).get(), "Ingen sendeforsøk ennå.")
+
+    let due = try XCTUnwrap(job.createdAt).addingTimeInterval(60)
+    board.runDueCronJobs(now: due)
+    board.runDueCronJobs(now: due)
+    board.editWorkspace { $0.cronJobs[0].prompt = " " }
+    board.runCronJob(job.id, now: due.addingTimeInterval(15))
+    board.editWorkspace { $0.nodes.removeAll { $0.id == card } }
+    board.runCronJob(job.id, now: due.addingTimeInterval(30))
+
+    let history = try board.controlCron(args).get()
+    let lines = history.components(separatedBy: "\n")
+    XCTAssertEqual(lines.count, 3, "A repeated scheduler tick must not duplicate history")
+    XCTAssertTrue(lines[0].contains("Fant ikke kortet «Bygger»"))
+    XCTAssertTrue(lines[1].contains("Kunne ikke sende"))
+    XCTAssertTrue(lines[2].contains("Sendt til Bygger"))
+    let saved = try JSONEncoder().encode(XCTUnwrap(board.workspace))
+    let restored = try JSONDecoder().decode(Workspace.self, from: saved)
+    board.editWorkspace { $0 = restored }
+    XCTAssertEqual(try board.controlCron(args).get(), history)
+    XCTAssertThrowsError(try board.controlCron(["action": "history", "id": UUID().uuidString]).get())
+  }
+
   func testRestoredInvalidCronSchedulesNeverDispatchAndRemainRemovable() throws {
     let board = board()
     let card = board.addConsole(agentID: "shell")

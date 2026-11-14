@@ -80,3 +80,10 @@ The scheduler also validates restored schedules before calculating their next ru
 intervals and clock times have no next run (`distantFuture`) and are never automatically due.
 Saved jobs remain unchanged and available to list or remove; invalid intervals are not clamped
 to a shorter interval that could send an unintended message.
+
+Each Cron job retains its latest 20 send attempts, newest first, in the private workspace file.
+The Cron panel exposes the timestamped list under “Sendeforsøk”; `lanebay cron history <job-id>` reads the
+same history. Manual and scheduled attempts share the recording path, including missing-card errors.
+These are dispatch results, not confirmation that an agent completed its task. Existing `lastRun`
+and `lastResult` fields stay compatible; a legacy last result becomes the first history entry on load.
+Removing a job removes its history. No prompts or terminal output are copied into the history.

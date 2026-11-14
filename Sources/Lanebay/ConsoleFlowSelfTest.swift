@@ -58,7 +58,8 @@ enum ConsoleFlowSelfTest {
       await LaunchSnapshot.write(board: board, to: directory, notes: notes, imageName: "closed.png")
     }
     notes.append(contentsOf: await orchestrate(on: board, directory: directory, prior: notes))
-    notes.append(contentsOf: await openPanels(directory: directory))
+    notes.append(contentsOf: await exerciseCronHistory(on: board))
+    notes.append(contentsOf: await openPanels(board: board, directory: directory))
     await LaunchSnapshot.write(
       board: board, to: directory, notes: notes, imageName: "panels-closed.png", probeAccessibility: false)
     if LaunchIsolation.phase == "arrange" {
@@ -1156,8 +1157,30 @@ enum ConsoleFlowSelfTest {
     return notes
   }
 
+  private static func exerciseCronHistory(on board: BoardViewModel) async -> [String] {
+    guard let root = LaunchIsolation.root else { return ["cronHistory=false"] }
+    let receiptName = "cron-history-\(UUID().uuidString)"
+    let receipt = root.appendingPathComponent(receiptName)
+    let card = board.addConsole(agentID: "shell", cwd: root)
+    board.renameConsole(card, to: "Cron test")
+    guard let job = try? board.addCronJob(name: "Historikktest", card: "Cron test",
+      prompt: "printf cron-ok > \(receiptName)", schedule: .every(minutes: 5)).get() else {
+      return ["cronHistory=false"]
+    }
+    board.setCronJobEnabled(job.id, false)
+    board.runCronJob(job.id)
+    let delivered = await waitUntil(.seconds(8)) {
+      (try? String(contentsOf: receipt, encoding: .utf8)) == "cron-ok"
+    }
+    await board.closeConsole(card)
+    board.runCronJob(job.id)
+    let history = board.cronJobs.first { $0.id == job.id }?.history ?? []
+    return ["cronDelivered=\(delivered)",
+      "cronHistory=\(history.count == 2 && history[0].result.contains("Fant ikke kortet") && history[1].result.contains("Sendt til"))"]
+  }
+
   /// Opens every rail panel at 800pt, including the ones that start below the fold.
-  private static func openPanels(directory: URL) async -> [String] {
+  private static func openPanels(board: BoardViewModel, directory: URL) async -> [String] {
     var notes = ["flow=panels"]
     guard let window = LaunchSnapshot.boardWindow(), let content = window.contentView else {
       notes.append("panels=no-window")
@@ -1209,6 +1232,24 @@ enum ConsoleFlowSelfTest {
         let toggle = settingsNames.contains("settings.askBeforeSending") || settingsNames.contains("Spør før sending til en terminal")
         notes.append("settingsToggle=\(toggle)")
         LaunchSnapshot.writeWindow(window, to: directory.appendingPathComponent("panel-settings.png"))
+      } else if panel == .loops {
+        let identifiers = board.cronJobs.map { "cron.history.\($0.id)" }
+        let collapsedText = await AccessibilityProbe.staticTextValues(pid: getpid())
+        let wasVisible = collapsedText.contains { $0.contains("Sendt til Cron test") }
+        let historyOpened = await AccessibilityProbe.press(pid: getpid(), names: identifiers + ["Sendeforsøk (2)"], actions: [kAXPressAction as String])
+        var historyVisible = false
+        for _ in 0..<20 {
+          let text = await AccessibilityProbe.staticTextValues(pid: getpid())
+          historyVisible = text.contains { $0.contains("Sendt til Cron test") }
+          if historyVisible { break }
+          try? await Task.sleep(for: .milliseconds(50))
+        }
+        notes.append("cronHistoryBefore=\(wasVisible)")
+        notes.append("cronHistoryPress=\(historyOpened)")
+        notes.append("cronHistoryAfter=\(historyVisible)")
+        notes.append("cronHistoryExpanded=\(historyOpened && !wasVisible && historyVisible)")
+        try? await Task.sleep(for: .milliseconds(250))
+        LaunchSnapshot.writeWindow(window, to: directory.appendingPathComponent("panel-cron-history.png"))
       } else if panel == .docs {
         LaunchSnapshot.writeWindow(window, to: directory.appendingPathComponent("panel-docs.png"))
       } else if panel == .markdown {

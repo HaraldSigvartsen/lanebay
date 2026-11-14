@@ -196,6 +196,50 @@ final class CronTests: XCTestCase {
 
     // MARK: - Codable
 
+    func testRunHistoryKeepsNewestTwentyAttemptsAndRoundTrips() throws {
+        var job = CronJob(name: "History", card: "Builder", prompt: "Status?", schedule: .every(minutes: 5))
+        let start = date(2026, 3, 2, 12, 0)
+        for index in 0..<25 {
+            job.recordRun(at: start.addingTimeInterval(Double(index)), result: "Attempt \(index)")
+        }
+        XCTAssertEqual(job.history.count, 20)
+        XCTAssertEqual(job.history.first?.date, start.addingTimeInterval(24))
+        XCTAssertEqual(job.history.first?.result, "Attempt 24")
+        XCTAssertEqual(job.history.last?.result, "Attempt 5")
+        XCTAssertEqual(job.lastRun, start.addingTimeInterval(24))
+        XCTAssertEqual(job.lastResult, "Attempt 24")
+        let restored = try JSONDecoder().decode(CronJob.self, from: JSONEncoder().encode(job))
+        XCTAssertEqual(restored, job)
+    }
+
+    func testLegacyLastResultSeedsHistoryWithoutChangingScheduleBaseline() throws {
+        let last = date(2026, 3, 2, 12, 0)
+        let job = CronJob(name: "Legacy", card: "Builder", prompt: "Status?", schedule: .every(minutes: 5),
+                          lastRun: last, lastResult: "Sendt til Builder")
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(job)) as? [String: Any])
+        object.removeValue(forKey: "history")
+        let restored = try JSONDecoder().decode(CronJob.self, from: JSONSerialization.data(withJSONObject: object))
+        XCTAssertEqual(restored.history.count, 1)
+        XCTAssertEqual(restored.history.first?.date, last)
+        XCTAssertEqual(restored.history.first?.result, "Sendt til Builder")
+        XCTAssertEqual(restored.lastRun, last)
+        XCTAssertFalse(CronPlanner.isDue(restored, now: last.addingTimeInterval(299), reference: last, calendar: utc))
+    }
+
+    func testDecodeBoundsSavedHistory() throws {
+        let job = CronJob(name: "History", card: "Builder", prompt: "Status?", schedule: .every(minutes: 5))
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(job)) as? [String: Any])
+        object["history"] = (0..<25).map { ["date": Double(25 - $0), "result": "Attempt \($0)"] as [String: Any] }
+        let restored = try JSONDecoder().decode(CronJob.self, from: JSONSerialization.data(withJSONObject: object))
+        XCTAssertEqual(restored.history.count, 20)
+        XCTAssertEqual(restored.history.first?.result, "Attempt 0")
+        XCTAssertEqual(restored.history.last?.result, "Attempt 19")
+        object["history"] = "damaged"
+        let damaged = try JSONDecoder().decode(CronJob.self, from: JSONSerialization.data(withJSONObject: object))
+        XCTAssertTrue(damaged.history.isEmpty)
+        XCTAssertEqual(damaged.schedule, .every(minutes: 5))
+    }
+
     func testCodableRoundTrip() throws {
         let job = CronJob(name: "Ukentlig", card: "@planlegger", prompt: "Oppsummer uken",
                           schedule: .weekdays(hour: 16, minute: 5), enabled: false,
@@ -229,6 +273,7 @@ final class CronTests: XCTestCase {
         XCTAssertNil(decoded.lastRun)
         XCTAssertNil(decoded.lastResult)
         XCTAssertNil(decoded.createdAt)
+        XCTAssertTrue(decoded.history.isEmpty)
         let reference = date(2026, 3, 2, 12, 0)
         XCTAssertFalse(CronPlanner.isDue(decoded, now: reference.addingTimeInterval(14 * 60),
                                          reference: reference, calendar: utc))

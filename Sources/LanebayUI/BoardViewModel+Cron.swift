@@ -47,13 +47,13 @@ extension BoardViewModel {
   public func runCronJob(_ id: UUID, now: Date = Date()) {
     guard let job = cronJobs.first(where: { $0.id == id }) else { return }
     guard let card = resolveCard(job.card) else {
-      editCronJob(id) { $0.lastRun = now; $0.lastResult = "Fant ikke kortet «\(job.card)»" }
+      editCronJob(id) { $0.recordRun(at: now, result: "Fant ikke kortet «\(job.card)»") }
       return
     }
     appendChat(ChatEntry(kind: .system, text: "⏰ Planlagt jobb «\(job.name)» (\(CronPlanner.describe(job.schedule)))"))
     let sent = sendChat("@\(handle(for: card)) \(job.prompt)")
     let title = workspace?.nodes.first { $0.id == card }?.title ?? job.card
-    editCronJob(id) { $0.lastRun = now; $0.lastResult = sent ? "Sendt til \(title)" : "Kunne ikke sende" }
+    editCronJob(id) { $0.recordRun(at: now, result: sent ? "Sendt til \(title)" : "Kunne ikke sende") }
   }
 
   private func editCronJob(_ id: UUID, _ change: (inout CronJob) -> Void) {
@@ -81,16 +81,19 @@ extension BoardViewModel {
           + (job.lastResult.map { "  (sist: \($0))" } ?? "")
       }
       return .success(lines.isEmpty ? "Ingen planlagte jobber." : lines.joined(separator: "\n"))
-    case "rm", "run", "on", "off":
+    case "rm", "run", "on", "off", "history":
       guard let job = cronJob(args["id"] ?? "") else { return .failure(CronControlError("Fant ikke jobben «\(args["id"] ?? "")».")) }
       switch args["action"] {
+      case "history":
+        let lines = job.history.map { "\($0.date.formatted(date: .abbreviated, time: .standard)) – \($0.result)" }
+        return .success(lines.isEmpty ? "Ingen sendeforsøk ennå." : lines.joined(separator: "\n"))
       case "rm": removeCronJob(job.id); return .success("Fjernet.")
       case "run": runCronJob(job.id); return .success("Kjører «\(job.name)» nå.")
       case "on": setCronJobEnabled(job.id, true); return .success("Slått på.")
       default: setCronJobEnabled(job.id, false); return .success("Slått av.")
       }
     default:
-      return .failure(CronControlError("cron tar add, list, rm, run, on eller off."))
+      return .failure(CronControlError("cron tar add, list, history, rm, run, on eller off."))
     }
   }
 }

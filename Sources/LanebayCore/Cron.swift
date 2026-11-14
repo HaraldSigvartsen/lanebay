@@ -11,11 +11,18 @@ public enum CronSchedule: Codable, Sendable, Equatable {
     case weekdays(hour: Int, minute: Int)
 }
 
+/// One send attempt, not a report that the agent finished its task.
+public struct CronRun: Codable, Sendable, Equatable {
+    public let date: Date
+    public let result: String
+}
+
 public struct CronJob: Codable, Identifiable, Sendable, Equatable {
     /// Longest prompt we send to a card.
     public static let maxPromptLength = 1500
     /// Shortest and longest interval for `.every`.
     public static let minuteRange = 1...10080
+    public static let historyLimit = 20
 
     public var id: UUID
     public var name: String
@@ -29,6 +36,8 @@ public struct CronJob: Codable, Identifiable, Sendable, Equatable {
     public var lastRun: Date?
     /// Short note about the last run, e.g. "Sendt til Utvikler" / "Fant ikke kortet".
     public var lastResult: String?
+    /// Newest send attempts first, bounded independently for each job.
+    public private(set) var history: [CronRun] = []
 
     public init(id: UUID = UUID(), name: String, card: String, prompt: String,
                 schedule: CronSchedule, enabled: Bool = true,
@@ -42,10 +51,18 @@ public struct CronJob: Codable, Identifiable, Sendable, Equatable {
         self.createdAt = createdAt
         self.lastRun = lastRun
         self.lastResult = lastResult
+        if let lastRun, let lastResult { recordRun(at: lastRun, result: lastResult) }
+    }
+
+    public mutating func recordRun(at date: Date, result: String) {
+        lastRun = date
+        lastResult = result
+        history.insert(CronRun(date: date, result: result), at: 0)
+        if history.count > Self.historyLimit { history.removeLast(history.count - Self.historyLimit) }
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, card, prompt, schedule, enabled, createdAt, lastRun, lastResult
+        case id, name, card, prompt, schedule, enabled, createdAt, lastRun, lastResult, history
     }
 
     /// Tolerant decoding: a missing name becomes "Jobb", a missing job is enabled,
@@ -62,6 +79,8 @@ public struct CronJob: Codable, Identifiable, Sendable, Equatable {
         self.createdAt = try? c.decodeIfPresent(Date.self, forKey: .createdAt)
         self.lastRun = try? c.decodeIfPresent(Date.self, forKey: .lastRun)
         self.lastResult = try? c.decodeIfPresent(String.self, forKey: .lastResult)
+        history = Array(((try? c.decodeIfPresent([CronRun].self, forKey: .history)) ?? []).prefix(Self.historyLimit))
+        if history.isEmpty, let lastRun, let lastResult { recordRun(at: lastRun, result: lastResult) }
     }
 }
 

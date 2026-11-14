@@ -79,6 +79,20 @@ struct CronJobsSection: View {
           Text("Sist: \(last.formatted(date: .omitted, time: .shortened)) – \(result)")
             .font(.caption2).foregroundStyle(.secondary)
         }
+        if !job.history.isEmpty {
+          DisclosureGroup("Sendeforsøk (\(job.history.count))") {
+            VStack(alignment: .leading, spacing: 4) {
+              ForEach(job.history.indices, id: \.self) { index in
+                let run = job.history[index]
+                Text("\(run.date.formatted(date: .abbreviated, time: .standard)) – \(run.result)")
+                  .frame(maxWidth: .infinity, alignment: .leading)
+              }
+            }
+            .textSelection(.enabled)
+          }
+          .font(.caption2).foregroundStyle(.secondary)
+          .accessibilityIdentifier("cron.history.\(job.id)")
+        }
       }
       Spacer()
       Toggle("", isOn: Binding(get: { job.enabled }, set: { model.setCronJobEnabled(job.id, $0) }))

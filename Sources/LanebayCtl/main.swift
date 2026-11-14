@@ -15,6 +15,7 @@ usage: lanebay <command> [options]
   link   rm <wire-id>
   cron   add <card> --when "30m|07:30|hverdager 08:00" --text "<message>" [--name "<name>"]
   cron   list | rm <job-id> | run <job-id> | on <job-id> | off <job-id>
+  cron   history <job-id>
          <from>/<to>: a task id, a card title, or the start of a card id.
 
 Talks to the running Lanebay.app over ~/Library/Application Support/Lanebay/control.sock.
@@ -128,11 +129,11 @@ case .cron:
     args["when"] = when
     args["text"] = text
     if let name = options["name"] { args["name"] = name }
-  case "rm", "run", "on", "off":
+  case "rm", "run", "on", "off", "history":
     guard positional.count >= 2 else { fail("cron \(action) needs a job id.", code: 2) }
     args["id"] = positional[1]
   case "list": break
-  default: fail("cron takes add, list, rm, run, on or off.", code: 2)
+  default: fail("cron takes add, list, history, rm, run, on or off.", code: 2)
   }
 }
 
