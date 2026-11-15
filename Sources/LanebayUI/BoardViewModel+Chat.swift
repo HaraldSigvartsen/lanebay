@@ -109,18 +109,25 @@ extension BoardViewModel {
 
   // MARK: Sending
 
-  /// Sends a chat message to every tagged card (or the selected one). Stopped cards are started first.
+  /// Sends to tagged/selected cards, or one explicit card with literal text. Stopped cards are started first.
   @discardableResult
-  public func sendChat(_ text: String) -> Bool {
+  public func sendChat(_ text: String, to target: UUID? = nil) -> Bool {
     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return false }
-    let recipients = chatRecipients(for: trimmed)
+    let recipients: (targets: [UUID], all: Bool, body: String)
+    if let target {
+      guard consoleNodes.contains(where: { $0.id == target }) else { return false }
+      recipients = ([target], false, trimmed)
+    } else {
+      recipients = chatRecipients(for: trimmed)
+    }
     guard !recipients.body.isEmpty else { return false }
     guard !recipients.targets.isEmpty else {
       appendChat(ChatEntry(kind: .system, text: "Ingen mottaker. Tagg en terminal med @navn, skriv @alle, eller velg et kort."))
       return false
     }
-    appendChat(ChatEntry(kind: .user, text: trimmed, targets: recipients.targets))
+    let displayed = target.map { "@\(handle(for: $0)) \(trimmed)" } ?? trimmed
+    appendChat(ChatEntry(kind: .user, text: displayed, targets: recipients.targets))
     for target in recipients.targets {
       resetWireHops(target)
       beginChatReply(for: target, sent: recipients.body)

@@ -1163,19 +1163,24 @@ enum ConsoleFlowSelfTest {
     let receipt = root.appendingPathComponent(receiptName)
     let card = board.addConsole(agentID: "shell", cwd: root)
     board.renameConsole(card, to: "Cron test")
+    let other = board.addConsole(agentID: "shell", cwd: root)
+    board.renameConsole(other, to: "Cron observer")
     guard let job = try? board.addCronJob(name: "Historikktest", card: "Cron test",
-      prompt: "printf cron-ok > \(receiptName)", schedule: .every(minutes: 5)).get() else {
+      prompt: "printf '%s' '@alle @cron-observer' > \(receiptName)", schedule: .every(minutes: 5)).get() else {
       return ["cronHistory=false"]
     }
     board.setCronJobEnabled(job.id, false)
     board.runCronJob(job.id)
     let delivered = await waitUntil(.seconds(8)) {
-      (try? String(contentsOf: receipt, encoding: .utf8)) == "cron-ok"
+      (try? String(contentsOf: receipt, encoding: .utf8)) == "@alle @cron-observer"
     }
+    let isolated = board.sessions[other] == nil
+      && board.chatEntries.last(where: { $0.kind == .user })?.targets == [card]
+    await board.closeConsole(other)
     await board.closeConsole(card)
     board.runCronJob(job.id)
     let history = board.cronJobs.first { $0.id == job.id }?.history ?? []
-    return ["cronDelivered=\(delivered)",
+    return ["cronDelivered=\(delivered)", "cronTargetIsolated=\(isolated)",
       "cronHistory=\(history.count == 2 && history[0].result.contains("Fant ikke kortet") && history[1].result.contains("Sendt til"))"]
   }
 

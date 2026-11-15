@@ -51,7 +51,7 @@ extension BoardViewModel {
       return
     }
     appendChat(ChatEntry(kind: .system, text: "⏰ Planlagt jobb «\(job.name)» (\(CronPlanner.describe(job.schedule)))"))
-    let sent = sendChat("@\(handle(for: card)) \(job.prompt)")
+    let sent = sendChat(job.prompt, to: card)
     let title = workspace?.nodes.first { $0.id == card }?.title ?? job.card
     editCronJob(id) { $0.recordRun(at: now, result: sent ? "Sendt til \(title)" : "Kunne ikke sende") }
   }

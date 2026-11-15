@@ -173,7 +173,7 @@ extension BoardViewModel {
 
 extension BoardViewModel: WireControlling {
   public func controlSendToCard(_ id: UUID, text: String) -> Bool {
-    sendChat("@\(handle(for: id)) \(text)")
+    sendChat(text, to: id)
   }
 
   public func resolveCard(_ reference: String) -> UUID? {

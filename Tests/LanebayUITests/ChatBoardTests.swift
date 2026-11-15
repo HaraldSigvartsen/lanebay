@@ -94,6 +94,46 @@ final class ChatBoardTests: XCTestCase {
     XCTAssertTrue(board.cronJobs.isEmpty)
   }
 
+  func testCronPromptMentionsStayLiteralAndNeverChangeRecipients() throws {
+    let board = board()
+    let card = board.addConsole(agentID: "shell")
+    let other = board.addConsole(agentID: "shell")
+    board.renameConsole(card, to: "Bygger")
+    board.renameConsole(other, to: "Reviewer")
+    for prompt in ["@alle", "Se @reviewer og @all i dokumentasjonen"] {
+      let job = try board.addCronJob(name: "Literal", card: "Bygger", prompt: prompt,
+                                     schedule: .every(minutes: 5)).get()
+      board.runCronJob(job.id)
+      let entry = try XCTUnwrap(board.chatEntries.last { $0.kind == .user })
+      XCTAssertEqual(entry.targets, [card])
+      XCTAssertEqual(board.chatWorking[card]?.sent, prompt)
+      XCTAssertNil(board.chatWorking[other])
+      XCTAssertEqual(board.cronJobs.last?.lastResult, "Sendt til Bygger")
+    }
+  }
+
+  func testControlSendKeepsExplicitTargetAndLiteralMentions() throws {
+    let board = board()
+    let card = board.addConsole(agentID: "shell")
+    let other = board.addConsole(agentID: "shell")
+    board.renameConsole(card, to: "Bygger")
+    board.renameConsole(other, to: "Reviewer")
+    let prompt = "Se @reviewer og @alle i dokumentasjonen"
+    XCTAssertTrue(board.controlSendToCard(card, text: prompt))
+    XCTAssertEqual(board.chatEntries.last { $0.kind == .user }?.targets, [card])
+    XCTAssertEqual(board.chatWorking[card]?.sent, prompt)
+    XCTAssertNil(board.chatWorking[other])
+    let entries = board.chatEntries
+    XCTAssertFalse(board.controlSendToCard(UUID(), text: prompt))
+    XCTAssertFalse(board.controlSendToCard(card, text: "  "))
+    XCTAssertEqual(board.chatEntries, entries)
+
+    XCTAssertTrue(board.sendChat("@alle status"))
+    XCTAssertEqual(Set(try XCTUnwrap(board.chatEntries.last { $0.kind == .user }).targets), [card, other])
+    XCTAssertEqual(board.chatWorking[card]?.sent, "status")
+    XCTAssertEqual(board.chatWorking[other]?.sent, "status")
+  }
+
   func testCronControlRejectsOversizedIntervalWithoutAddingJob() throws {
     let board = board()
     let card = board.addConsole(agentID: "shell")

@@ -87,3 +87,11 @@ same history. Manual and scheduled attempts share the recording path, including 
 These are dispatch results, not confirmation that an agent completed its task. Existing `lastRun`
 and `lastResult` fields stay compatible; a legacy last result becomes the first history entry on load.
 Removing a job removes its history. No prompts or terminal output are copied into the history.
+
+### Explicit-target message delivery
+
+Cron jobs and `lanebay send` deliver the prompt literally to their resolved card ID.
+Mentions such as `@alle` and `@reviewer` inside that prompt do not change recipients
+or disappear from the message. The shared chat path still starts stopped terminals,
+tracks replies and records activity. Invalid card IDs and empty messages are rejected.
+Interactive chat continues to interpret mentions for routing.
