@@ -95,3 +95,13 @@ Mentions such as `@alle` and `@reviewer` inside that prompt do not change recipi
 or disappear from the message. The shared chat path still starts stopped terminals,
 tracks replies and records activity. Invalid card IDs and empty messages are rejected.
 Interactive chat continues to interpret mentions for routing.
+
+### Stable Cron recipients
+
+New Cron jobs persist the recipient's card ID. Renaming a card, or giving its old name to
+another card, does not redirect the job. A deleted recipient records a missing-card attempt;
+it never falls back to another card with the same name. The Cron panel and CLI list show the
+recipient's current title while the card exists, retaining the saved reference otherwise.
+Legacy jobs without a card ID resolve their saved name once on their first successful lookup
+and persist that identity for later runs. Before that lookup, legacy jobs still use their saved
+name. A malformed explicit card ID fails decoding instead of enabling name-based fallback.

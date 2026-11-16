@@ -28,6 +28,8 @@ public struct CronJob: Codable, Identifiable, Sendable, Equatable {
     public var name: String
     /// Card name or @handle the prompt goes to.
     public var card: String
+    /// Stable recipient. Nil for legacy jobs until their first resolved run.
+    public var cardID: UUID?
     public var prompt: String
     public var schedule: CronSchedule
     public var enabled: Bool
@@ -41,10 +43,11 @@ public struct CronJob: Codable, Identifiable, Sendable, Equatable {
 
     public init(id: UUID = UUID(), name: String, card: String, prompt: String,
                 schedule: CronSchedule, enabled: Bool = true,
-                lastRun: Date? = nil, lastResult: String? = nil, createdAt: Date? = Date()) {
+                lastRun: Date? = nil, lastResult: String? = nil, createdAt: Date? = Date(), cardID: UUID? = nil) {
         self.id = id
         self.name = name
         self.card = card
+        self.cardID = cardID
         self.prompt = prompt
         self.schedule = schedule
         self.enabled = enabled
@@ -62,7 +65,7 @@ public struct CronJob: Codable, Identifiable, Sendable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, card, prompt, schedule, enabled, createdAt, lastRun, lastResult, history
+        case id, name, card, cardID, prompt, schedule, enabled, createdAt, lastRun, lastResult, history
     }
 
     /// Tolerant decoding: a missing name becomes "Jobb", a missing job is enabled,
@@ -72,6 +75,8 @@ public struct CronJob: Codable, Identifiable, Sendable, Equatable {
         self.id = (try? c.decodeIfPresent(UUID.self, forKey: .id)) ?? UUID()
         self.name = (try? c.decodeIfPresent(String.self, forKey: .name)) ?? "Jobb"
         self.card = (try? c.decodeIfPresent(String.self, forKey: .card)) ?? ""
+        // A damaged explicit recipient must not silently fall back to a different card by name.
+        self.cardID = try c.decodeIfPresent(UUID.self, forKey: .cardID)
         self.prompt = (try? c.decodeIfPresent(String.self, forKey: .prompt)) ?? ""
         self.schedule = (try? c.decodeIfPresent(CronSchedule.self, forKey: .schedule))
             ?? .every(minutes: 60)

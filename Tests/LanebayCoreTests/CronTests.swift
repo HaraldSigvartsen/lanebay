@@ -243,10 +243,21 @@ final class CronTests: XCTestCase {
     func testCodableRoundTrip() throws {
         let job = CronJob(name: "Ukentlig", card: "@planlegger", prompt: "Oppsummer uken",
                           schedule: .weekdays(hour: 16, minute: 5), enabled: false,
-                          lastRun: date(2026, 3, 6, 16, 5), lastResult: "Sendt til planlegger")
+                          lastRun: date(2026, 3, 6, 16, 5), lastResult: "Sendt til planlegger", cardID: UUID())
         let data = try JSONEncoder().encode(job)
         let decoded = try JSONDecoder().decode(CronJob.self, from: data)
         XCTAssertEqual(decoded, job)
+    }
+
+    func testDamagedExplicitRecipientDoesNotDecodeAsLegacyNameLookup() throws {
+        let job = CronJob(name: "Stable", card: "Builder", prompt: "Status?", schedule: .every(minutes: 5))
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(job)) as? [String: Any])
+        object["cardID"] = "damaged-id"
+        XCTAssertThrowsError(try JSONDecoder().decode(CronJob.self,
+            from: JSONSerialization.data(withJSONObject: object)))
+        object.removeValue(forKey: "cardID")
+        let legacy = try JSONDecoder().decode(CronJob.self, from: JSONSerialization.data(withJSONObject: object))
+        XCTAssertNil(legacy.cardID)
     }
 
     func testTolerantDecodeFillsDefaults() throws {

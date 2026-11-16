@@ -73,7 +73,7 @@ struct CronJobsSection: View {
       Image(systemName: "alarm").foregroundStyle(DS.Pastel.mintInk)
       VStack(alignment: .leading, spacing: 2) {
         Text(job.name).font(.body.weight(.medium))
-        Text("\(CronPlanner.describe(job.schedule).capitalizedFirst) → \(job.card)").font(.caption)
+        Text("\(CronPlanner.describe(job.schedule).capitalizedFirst) → \(model.cronCardTitle(job))").font(.caption)
         Text(job.prompt).font(.caption).foregroundStyle(.secondary).lineLimit(2)
         if let result = job.lastResult, let last = job.lastRun {
           Text("Sist: \(last.formatted(date: .omitted, time: .shortened)) – \(result)")

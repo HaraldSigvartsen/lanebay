@@ -112,6 +112,69 @@ final class ChatBoardTests: XCTestCase {
     }
   }
 
+  func testCronKeepsOriginalCardAfterRenameAndSave() throws {
+    let board = board()
+    let original = board.addConsole(agentID: "shell")
+    let other = board.addConsole(agentID: "shell")
+    board.renameConsole(original, to: "Bygger")
+    let job = try board.addCronJob(name: "Stable", card: "@bygger", prompt: "echo stable",
+                                   schedule: .every(minutes: 5)).get()
+    board.renameConsole(original, to: "Ny bygger")
+    board.renameConsole(other, to: "Bygger")
+    let saved = try JSONEncoder().encode(XCTUnwrap(board.workspace))
+    let restored = try JSONDecoder().decode(Workspace.self, from: saved)
+    board.editWorkspace { $0 = restored }
+
+    XCTAssertEqual(board.cronCardTitle(try XCTUnwrap(board.cronJobs.first)), "Ny bygger")
+    XCTAssertTrue(try board.controlCron(["action": "list"]).get().contains("→ Ny bygger"))
+    board.runDueCronJobs(now: try XCTUnwrap(job.createdAt).addingTimeInterval(300))
+
+    XCTAssertEqual(board.chatEntries.last { $0.kind == .user }?.targets, [original])
+    XCTAssertEqual(board.cronJobs.first?.lastResult, "Sendt til Ny bygger")
+    XCTAssertNil(board.sessions[other], "Reusing a name must never retarget a scheduled message")
+  }
+
+  func testCronNeverRetargetsDeletedCardToReusedName() throws {
+    let board = board()
+    let original = board.addConsole(agentID: "shell")
+    board.renameConsole(original, to: "Bygger")
+    let job = try board.addCronJob(name: "Stable", card: "Bygger", prompt: "echo stable",
+                                   schedule: .every(minutes: 5)).get()
+    board.editWorkspace { $0.nodes.removeAll { $0.id == original } }
+    let replacement = board.addConsole(agentID: "shell")
+    board.renameConsole(replacement, to: "Bygger")
+
+    board.runCronJob(job.id)
+
+    XCTAssertTrue(board.chatEntries.isEmpty)
+    XCTAssertNil(board.sessions[replacement])
+    XCTAssertEqual(board.cronJobs.first?.lastResult, "Fant ikke kortet «Bygger»")
+  }
+
+  func testLegacyCronBindsToFirstResolvedCardAcrossSave() throws {
+    let board = board()
+    let card = board.addConsole(agentID: "shell")
+    board.renameConsole(card, to: "Bygger")
+    let job = CronJob(name: "Legacy", card: "Bygger", prompt: "echo legacy", schedule: .every(minutes: 5))
+    var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(job)) as? [String: Any])
+    object.removeValue(forKey: "cardID")
+    let legacy = try JSONDecoder().decode(CronJob.self, from: JSONSerialization.data(withJSONObject: object))
+    board.editWorkspace { $0.cronJobs = [legacy] }
+    board.runCronJob(job.id)
+    board.renameConsole(card, to: "Ny bygger")
+    let other = board.addConsole(agentID: "shell")
+    board.renameConsole(other, to: "Bygger")
+    let saved = try JSONEncoder().encode(XCTUnwrap(board.workspace))
+    let restored = try JSONDecoder().decode(Workspace.self, from: saved)
+    board.editWorkspace { $0 = restored }
+
+    board.runCronJob(job.id)
+
+    XCTAssertEqual(board.chatEntries.last { $0.kind == .user }?.targets, [card])
+    XCTAssertEqual(board.cronJobs.first?.cardID, card)
+    XCTAssertNil(board.sessions[other])
+  }
+
   func testControlSendKeepsExplicitTargetAndLiteralMentions() throws {
     let board = board()
     let card = board.addConsole(agentID: "shell")

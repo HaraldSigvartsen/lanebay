@@ -28,11 +28,12 @@ extension BoardViewModel {
   @discardableResult
   public func addCronJob(name: String, card: String, prompt: String, schedule: CronSchedule) -> Result<CronJob, CronControlError> {
     let cleanCard = card.trimmingCharacters(in: .whitespacesAndNewlines)
-    let job = CronJob(
+    var job = CronJob(
       name: name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Jobb" : name,
       card: cleanCard, prompt: prompt.trimmingCharacters(in: .whitespacesAndNewlines), schedule: schedule)
     if let error = CronPlanner.validate(job) { return .failure(CronControlError(error)) }
-    guard resolveCard(cleanCard) != nil else { return .failure(CronControlError("Fant ikke kortet «\(cleanCard)».")) }
+    guard let cardID = resolveCard(cleanCard) else { return .failure(CronControlError("Fant ikke kortet «\(cleanCard)».")) }
+    job.cardID = cardID
     editWorkspace { $0.cronJobs.append(job) }
     return .success(job)
   }
@@ -46,14 +47,25 @@ extension BoardViewModel {
   /// Runs a job now (also used by "Kjør nå" and `lanebay cron run`).
   public func runCronJob(_ id: UUID, now: Date = Date()) {
     guard let job = cronJobs.first(where: { $0.id == id }) else { return }
-    guard let card = resolveCard(job.card) else {
+    guard let card = cronTarget(job) else {
       editCronJob(id) { $0.recordRun(at: now, result: "Fant ikke kortet «\(job.card)»") }
       return
     }
+    if job.cardID == nil { editCronJob(id) { $0.cardID = card } }
     appendChat(ChatEntry(kind: .system, text: "⏰ Planlagt jobb «\(job.name)» (\(CronPlanner.describe(job.schedule)))"))
     let sent = sendChat(job.prompt, to: card)
     let title = workspace?.nodes.first { $0.id == card }?.title ?? job.card
     editCronJob(id) { $0.recordRun(at: now, result: sent ? "Sendt til \(title)" : "Kunne ikke sende") }
+  }
+
+  private func cronTarget(_ job: CronJob) -> UUID? {
+    if let id = job.cardID { return consoleNodes.contains { $0.id == id } ? id : nil }
+    return resolveCard(job.card)
+  }
+
+  /// Current name for a bound recipient; keep the saved reference when its card is gone.
+  public func cronCardTitle(_ job: CronJob) -> String {
+    cronTarget(job).map { consoleTitle($0) } ?? job.card
   }
 
   private func editCronJob(_ id: UUID, _ change: (inout CronJob) -> Void) {
@@ -77,7 +89,7 @@ extension BoardViewModel {
         .map { "La til \($0.id.uuidString.prefix(8)) – \(CronPlanner.describe($0.schedule)) → \($0.card)" }
     case "list":
       let lines = cronJobs.map { job in
-        "\(job.id.uuidString.prefix(8))  \(job.enabled ? "på " : "av ")  \(job.name)  \(CronPlanner.describe(job.schedule)) → \(job.card)"
+        "\(job.id.uuidString.prefix(8))  \(job.enabled ? "på " : "av ")  \(job.name)  \(CronPlanner.describe(job.schedule)) → \(cronCardTitle(job))"
           + (job.lastResult.map { "  (sist: \($0))" } ?? "")
       }
       return .success(lines.isEmpty ? "Ingen planlagte jobber." : lines.joined(separator: "\n"))

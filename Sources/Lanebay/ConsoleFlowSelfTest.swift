@@ -1169,6 +1169,8 @@ enum ConsoleFlowSelfTest {
       prompt: "printf '%s' '@alle @cron-observer' > \(receiptName)", schedule: .every(minutes: 5)).get() else {
       return ["cronHistory=false"]
     }
+    board.renameConsole(card, to: "Cron renamed")
+    board.renameConsole(other, to: "Cron test")
     board.setCronJobEnabled(job.id, false)
     board.runCronJob(job.id)
     let delivered = await waitUntil(.seconds(8)) {
@@ -1176,11 +1178,13 @@ enum ConsoleFlowSelfTest {
     }
     let isolated = board.sessions[other] == nil
       && board.chatEntries.last(where: { $0.kind == .user })?.targets == [card]
-    await board.closeConsole(other)
     await board.closeConsole(card)
     board.runCronJob(job.id)
+    let deletedTargetIsolated = board.sessions[other] == nil
+    await board.closeConsole(other)
     let history = board.cronJobs.first { $0.id == job.id }?.history ?? []
     return ["cronDelivered=\(delivered)", "cronTargetIsolated=\(isolated)",
+      "cronDeletedTargetIsolated=\(deletedTargetIsolated)",
       "cronHistory=\(history.count == 2 && history[0].result.contains("Fant ikke kortet") && history[1].result.contains("Sendt til"))"]
   }
 
@@ -1240,12 +1244,12 @@ enum ConsoleFlowSelfTest {
       } else if panel == .loops {
         let identifiers = board.cronJobs.map { "cron.history.\($0.id)" }
         let collapsedText = await AccessibilityProbe.staticTextValues(pid: getpid())
-        let wasVisible = collapsedText.contains { $0.contains("Sendt til Cron test") }
+        let wasVisible = collapsedText.contains { $0.contains("Sendt til Cron renamed") }
         let historyOpened = await AccessibilityProbe.press(pid: getpid(), names: identifiers + ["Sendeforsøk (2)"], actions: [kAXPressAction as String])
         var historyVisible = false
         for _ in 0..<20 {
           let text = await AccessibilityProbe.staticTextValues(pid: getpid())
-          historyVisible = text.contains { $0.contains("Sendt til Cron test") }
+          historyVisible = text.contains { $0.contains("Sendt til Cron renamed") }
           if historyVisible { break }
           try? await Task.sleep(for: .milliseconds(50))
         }
