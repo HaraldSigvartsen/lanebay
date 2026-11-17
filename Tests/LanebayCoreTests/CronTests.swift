@@ -260,6 +260,31 @@ final class CronTests: XCTestCase {
         XCTAssertNil(legacy.cardID)
     }
 
+    func testUnreadableSavedScheduleNeverBecomesAnHourlyJob() throws {
+        let base = date(2026, 3, 2, 12, 0)
+        let job = CronJob(name: "Damaged", card: "Builder", prompt: "echo scheduled",
+                          schedule: .every(minutes: 5), createdAt: base)
+        let original = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(job)) as? [String: Any])
+        let schedules: [Any?] = [nil, NSNull(), "damaged", [:], ["unknown": [:]],
+                                 ["every": [:]], ["every": ["minutes": "5"]],
+                                 ["every": ["minutes": 1e30]],
+                                 ["daily": ["hour": 8]]]
+        for schedule in schedules {
+            var object = original
+            object["schedule"] = schedule
+            let restored = try JSONDecoder().decode(CronJob.self, from: JSONSerialization.data(withJSONObject: object))
+            XCTAssertEqual(restored.id, job.id)
+            XCTAssertEqual(restored.prompt, job.prompt)
+            XCTAssertEqual(CronPlanner.validate(restored), "Ugyldig tidsplan")
+            XCTAssertEqual(CronPlanner.describe(restored.schedule), "Ugyldig tidsplan")
+            XCTAssertEqual(CronPlanner.nextRun(restored.schedule, after: base, calendar: utc), .distantFuture)
+            XCTAssertFalse(CronPlanner.isDue(restored, now: base.addingTimeInterval(8 * 24 * 60 * 60),
+                                             reference: base, calendar: utc))
+            let reloaded = try JSONDecoder().decode(CronJob.self, from: JSONEncoder().encode(restored))
+            XCTAssertEqual(reloaded, restored, "Saving must not turn the damaged job into a runnable schedule")
+        }
+    }
+
     func testTolerantDecodeFillsDefaults() throws {
         let schedule = try JSONEncoder().encode(CronJob(name: "x", card: "x", prompt: "y",
                                                         schedule: .every(minutes: 15)))

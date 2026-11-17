@@ -105,3 +105,11 @@ recipient's current title while the card exists, retaining the saved reference o
 Legacy jobs without a card ID resolve their saved name once on their first successful lookup
 and persist that identity for later runs. Before that lookup, legacy jobs still use their saved
 name. A malformed explicit card ID fails decoding instead of enabling name-based fallback.
+
+### Unreadable Cron schedules
+
+A missing, null or undecodable saved schedule loads as an invalid zero-minute interval,
+so the rest of the workspace remains available without inventing an hourly job. Existing
+validation prevents automatic dispatch and returns no next run. The Cron panel and CLI
+show “Ugyldig tidsplan”; the job remains removable, and saving/reloading keeps it invalid.
+Valid schedules and other jobs retain their existing behavior.

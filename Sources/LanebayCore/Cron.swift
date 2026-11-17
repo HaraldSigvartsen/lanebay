@@ -78,8 +78,9 @@ public struct CronJob: Codable, Identifiable, Sendable, Equatable {
         // A damaged explicit recipient must not silently fall back to a different card by name.
         self.cardID = try c.decodeIfPresent(UUID.self, forKey: .cardID)
         self.prompt = (try? c.decodeIfPresent(String.self, forKey: .prompt)) ?? ""
+        // Keep unreadable jobs inspectable without inventing an executable schedule.
         self.schedule = (try? c.decodeIfPresent(CronSchedule.self, forKey: .schedule))
-            ?? .every(minutes: 60)
+            ?? .every(minutes: 0)
         self.enabled = (try? c.decodeIfPresent(Bool.self, forKey: .enabled)) ?? true
         self.createdAt = try? c.decodeIfPresent(Date.self, forKey: .createdAt)
         self.lastRun = try? c.decodeIfPresent(Date.self, forKey: .lastRun)
@@ -166,6 +167,7 @@ public enum CronPlanner {
 
     /// Norwegian plain description: "hvert 30. minutt", "hver dag kl. 07:30", "hverdager kl. 08:00".
     public static func describe(_ schedule: CronSchedule) -> String {
+        guard isValid(schedule: schedule) else { return "Ugyldig tidsplan" }
         switch schedule {
         case .every(let minutes):
             return "hvert \(minutes). minutt"

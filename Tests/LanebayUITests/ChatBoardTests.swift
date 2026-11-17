@@ -272,6 +272,33 @@ final class ChatBoardTests: XCTestCase {
     XCTAssertTrue(board.cronJobs.isEmpty)
   }
 
+  func testWorkspaceWithUnreadableCronScheduleLoadsWithoutDispatchingIt() throws {
+    let board = board()
+    let card = board.addConsole(agentID: "shell")
+    board.renameConsole(card, to: "Bygger")
+    let damaged = try board.addCronJob(name: "Skadet", card: "Bygger", prompt: "echo scheduled",
+                                      schedule: .every(minutes: 5)).get()
+    let valid = try board.addCronJob(name: "Gyldig", card: "Bygger", prompt: "echo valid",
+                                    schedule: .every(minutes: 10080)).get()
+    var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(XCTUnwrap(board.workspace))) as? [String: Any])
+    var jobs = try XCTUnwrap(object["cronJobs"] as? [[String: Any]])
+    jobs[0]["schedule"] = ["every": ["minutes": "damaged"]]
+    object["cronJobs"] = jobs
+    let restored = try JSONDecoder().decode(Workspace.self, from: JSONSerialization.data(withJSONObject: object))
+    board.editWorkspace { $0 = restored }
+
+    board.runDueCronJobs(now: try XCTUnwrap(damaged.createdAt).addingTimeInterval(3600))
+
+    XCTAssertEqual(board.cronJobs.count, 2)
+    XCTAssertEqual(board.cronJobs.last, valid, "Keep unaffected jobs intact")
+    XCTAssertNil(board.cronJobs.first?.lastRun)
+    XCTAssertTrue(board.chatEntries.isEmpty)
+    XCTAssertNil(board.sessions[card], "A damaged schedule must never start a terminal")
+    XCTAssertTrue(try board.controlCron(["action": "list"]).get().contains("Ugyldig tidsplan"))
+    _ = try board.controlCron(["action": "rm", "id": damaged.id.uuidString]).get()
+    XCTAssertEqual(board.cronJobs, [valid])
+  }
+
   func testNewCronJobWaitsItsIntervalAfterLongAppUptime() throws {
     let board = board()
     let card = board.addConsole(agentID: "shell")
