@@ -1158,15 +1158,16 @@ enum ConsoleFlowSelfTest {
   }
 
   private static func exerciseCronHistory(on board: BoardViewModel) async -> [String] {
-    guard let root = LaunchIsolation.root else { return ["cronHistory=false"] }
+    guard let root = LaunchIsolation.root, let owner = board.activeWorkspaceID else { return ["cronHistory=false"] }
     let receiptName = "cron-history-\(UUID().uuidString)"
     let receipt = root.appendingPathComponent(receiptName)
+    let replyToken = "cron-reply-\(UUID().uuidString)"
     let card = board.addConsole(agentID: "shell", cwd: root)
     board.renameConsole(card, to: "Cron test")
     let other = board.addConsole(agentID: "shell", cwd: root)
     board.renameConsole(other, to: "Cron observer")
     guard let job = try? board.addCronJob(name: "Historikktest", card: "Cron test",
-      prompt: "printf '%s' '@alle @cron-observer' > \(receiptName)", schedule: .every(minutes: 5)).get() else {
+      prompt: "printf '%s' '@alle @cron-observer' > \(receiptName); sleep 2; echo \(replyToken)", schedule: .every(minutes: 5)).get() else {
       return ["cronHistory=false"]
     }
     board.renameConsole(card, to: "Cron renamed")
@@ -1178,12 +1179,22 @@ enum ConsoleFlowSelfTest {
     }
     let isolated = board.sessions[other] == nil
       && board.chatEntries.last(where: { $0.kind == .user })?.targets == [card]
+    _ = board.createWorkspace(name: "Reply isolation")
+    board.clearChat()
+    let replyFinished = await waitUntil(.seconds(12)) {
+      board.workspaces.first { $0.id == owner }?.chat.contains {
+        $0.kind == .reply && $0.from == card && $0.status == .done && $0.text.contains(replyToken)
+      } == true
+    }
+    let replyIsolated = board.chatEntries.isEmpty
+    board.switchWorkspace(owner)
     await board.closeConsole(card)
     board.runCronJob(job.id)
     let deletedTargetIsolated = board.sessions[other] == nil
     await board.closeConsole(other)
     let history = board.cronJobs.first { $0.id == job.id }?.history ?? []
     return ["cronDelivered=\(delivered)", "cronTargetIsolated=\(isolated)",
+      "cronReplyAfterWorkspaceSwitch=\(replyFinished)", "cronReplyWorkspaceIsolated=\(replyIsolated)",
       "cronDeletedTargetIsolated=\(deletedTargetIsolated)",
       "cronHistory=\(history.count == 2 && history[0].result.contains("Fant ikke kortet") && history[1].result.contains("Sendt til"))"]
   }

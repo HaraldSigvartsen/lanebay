@@ -1182,8 +1182,8 @@ public final class BoardViewModel {
     changed(workspaces[workspaceIndex].id)
   }
 
-  func editWorkspace(_ edit: (inout Workspace) -> Void) {
-    guard let index = workspaces.firstIndex(where: { $0.id == activeWorkspaceID }) else { return }
+  func editWorkspace(workspaceID: UUID? = nil, _ edit: (inout Workspace) -> Void) {
+    guard let index = workspaces.firstIndex(where: { $0.id == (workspaceID ?? activeWorkspaceID) }) else { return }
     edit(&workspaces[index])
     changed(workspaces[index].id)
   }

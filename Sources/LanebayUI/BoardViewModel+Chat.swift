@@ -4,6 +4,7 @@ import LanebayCore
 /// A card busy with a message from the chat or a wire.
 public struct ChatWork: Equatable, Sendable {
   public var entryID: UUID
+  public var workspaceID: UUID
   public var started: Date
   public var startByte: Int
   public var sent: String? = nil
@@ -82,14 +83,14 @@ extension BoardViewModel {
     }
   }
 
-  func updateChat(_ id: UUID, _ change: (inout ChatEntry) -> Void) {
-    editWorkspace { ws in
+  func updateChat(_ id: UUID, workspaceID: UUID, _ change: (inout ChatEntry) -> Void) {
+    editWorkspace(workspaceID: workspaceID) { ws in
       if let index = ws.chat.firstIndex(where: { $0.id == id }) { change(&ws.chat[index]) }
     }
   }
 
   public func clearChat() {
-    chatWorking = [:]
+    chatWorking = chatWorking.filter { $0.value.workspaceID != activeWorkspaceID }
     editWorkspace { $0.chat = [] }
   }
 
@@ -134,7 +135,7 @@ extension BoardViewModel {
       let title = consoleTitle(target)
       deliverToCard(recipients.body, to: target) { [weak self] delivered in
         guard let self, !delivered, let work = self.chatWorking[target] else { return }
-        self.updateChat(work.entryID) { $0.text = "\(title) kunne ikke startes."; $0.status = .failed }
+        self.updateChat(work.entryID, workspaceID: work.workspaceID) { $0.text = "\(title) kunne ikke startes."; $0.status = .failed }
         self.chatWorking[target] = nil
       }
       recordActivity(.send, title: title, detail: BoardViewModel.activityPreview(recipients.body))
@@ -144,13 +145,14 @@ extension BoardViewModel {
 
   /// Opens a reply block for `id` and watches its output until it goes quiet.
   func beginChatReply(for id: UUID, sent: String? = nil) {
+    guard let workspaceID = activeWorkspaceID else { return }
     if let old = chatWorking[id] {
-      updateChat(old.entryID) { if $0.status == .working { $0.status = .done } }
+      updateChat(old.entryID, workspaceID: old.workspaceID) { if $0.status == .working { $0.status = .done } }
     }
     let entry = ChatEntry(kind: .reply, text: "", from: id, status: .working)
     appendChat(entry)
     let startByte = sessions[id].map { $0.isRunning && !$0.isClosed ? $0.outputByteCount : 0 } ?? 0
-    let work = ChatWork(entryID: entry.id, started: Date(), startByte: startByte, sent: sent)
+    let work = ChatWork(entryID: entry.id, workspaceID: workspaceID, started: Date(), startByte: startByte, sent: sent)
     chatWorking[id] = work
     Task { @MainActor [weak self] in await self?.watchReply(id, work: work) }
   }
@@ -169,7 +171,7 @@ extension BoardViewModel {
         return
       }
       let bytes = session.outputByteCount
-      let agentID = workspace?.nodes.first(where: { $0.id == id })?.agentID
+      let agentID = workspaces.first { $0.id == work.workspaceID }?.nodes.first { $0.id == id }?.agentID
       var tail = String(decoding: session.recentOutput.suffix(1500), as: UTF8.self)
       if !ReplyCompletion.isShell(agentID), let screen = session.screenText() {
         // AI TUIs redraw ads and spinners forever: judge quiet by the visible answer, not by bytes.
@@ -202,7 +204,7 @@ extension BoardViewModel {
   func finishReply(_ id: UUID, work: ChatWork, status: ChatEntryStatus, note: String?, screenAnswer: String = "") {
     var digest = OutputDigest.make(raw: chatOutput(id, since: work), sent: work.sent)
     // Full-screen AI tools: read the answer off the screen instead of the raw stream.
-    let agentID = workspace?.nodes.first(where: { $0.id == id })?.agentID
+    let agentID = workspaces.first { $0.id == work.workspaceID }?.nodes.first { $0.id == id }?.agentID
     if !ReplyCompletion.isShell(agentID) {
       var answer = screenAnswer.trimmingCharacters(in: .whitespacesAndNewlines)
       if answer.isEmpty, let screen = sessions[id]?.screenText() {
@@ -212,7 +214,7 @@ extension BoardViewModel {
       if let pick = ReplyCompletion.preferredAnswer(answer) { answer = pick }
       if !answer.isEmpty { digest = OutputDigest(steps: [], reply: answer, truncated: false) }
     }
-    updateChat(work.entryID) { entry in
+    updateChat(work.entryID, workspaceID: work.workspaceID) { entry in
       entry.status = status
       entry.steps = digest.steps
       entry.text = note ?? (digest.reply.isEmpty ? "Ingen ny tekst i terminalen." : digest.reply)

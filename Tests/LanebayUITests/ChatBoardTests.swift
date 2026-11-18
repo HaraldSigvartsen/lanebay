@@ -57,6 +57,74 @@ final class ChatBoardTests: XCTestCase {
     XCTAssertTrue(board.chatEntries.isEmpty)
   }
 
+  func testReplyFinishesInOriginalWorkspaceAfterSwitch() throws {
+    let board = board()
+    let original = try XCTUnwrap(board.activeWorkspaceID)
+    let card = board.addConsole(agentID: "shell")
+    board.beginChatReply(for: card)
+    let work = try XCTUnwrap(board.chatWorking[card])
+    let other = board.createWorkspace(name: "Other")
+    let otherCard = board.addConsole(agentID: "shell")
+    board.beginChatReply(for: otherCard)
+    let otherEntries = board.chatEntries
+
+    board.finishReply(card, work: work, status: .failed, note: "Kortet ble lukket.")
+
+    XCTAssertEqual(board.activeWorkspaceID, other)
+    XCTAssertEqual(board.chatEntries, otherEntries)
+    XCTAssertNil(board.chatWorking[card])
+    board.switchWorkspace(original)
+    let reply = try XCTUnwrap(board.chatEntries.first { $0.id == work.entryID })
+    XCTAssertEqual(reply.status, .failed)
+    XCTAssertEqual(reply.text, "Kortet ble lukket.")
+    XCTAssertNotNil(reply.finished)
+    try board.saveNow()
+    let store = WorkspaceStore(rootURL: board.homeDirectory.appendingPathComponent("workspaces"))
+    let restored = try store.load(id: original)
+    let restoredReply = try XCTUnwrap(restored.chat.first { $0.id == work.entryID })
+    XCTAssertEqual(restoredReply.status, reply.status)
+    XCTAssertEqual(restoredReply.text, reply.text)
+    XCTAssertEqual(try XCTUnwrap(restoredReply.finished).timeIntervalSince1970,
+                   try XCTUnwrap(reply.finished).timeIntervalSince1970, accuracy: 1)
+  }
+
+  func testAIReplyUsesOriginalProviderAfterWorkspaceSwitch() throws {
+    let board = board()
+    let original = try XCTUnwrap(board.activeWorkspaceID)
+    let card = board.addConsole(agentID: "opencode")
+    board.beginChatReply(for: card)
+    let work = try XCTUnwrap(board.chatWorking[card])
+    _ = board.createWorkspace(name: "Other")
+    _ = board.addConsole(agentID: "shell")
+
+    board.finishReply(card, work: work, status: .done, note: nil, screenAnswer: "Svar fra agenten.")
+
+    XCTAssertTrue(board.chatEntries.isEmpty)
+    board.switchWorkspace(original)
+    XCTAssertEqual(board.chatEntries.last?.text, "Svar fra agenten.")
+    XCTAssertEqual(board.chatEntries.last?.status, .done)
+  }
+
+  func testClearingChatKeepsOtherWorkspaceReplyRunning() throws {
+    let board = board()
+    let original = try XCTUnwrap(board.activeWorkspaceID)
+    let card = board.addConsole(agentID: "shell")
+    board.beginChatReply(for: card)
+    let work = try XCTUnwrap(board.chatWorking[card])
+    _ = board.createWorkspace(name: "Other")
+    let otherCard = board.addConsole(agentID: "shell")
+    board.beginChatReply(for: otherCard)
+
+    board.clearChat()
+
+    XCTAssertTrue(board.chatEntries.isEmpty)
+    XCTAssertNil(board.chatWorking[otherCard])
+    XCTAssertEqual(board.chatWorking[card], work)
+    board.finishReply(card, work: work, status: .failed, note: "Kortet ble lukket.")
+    board.switchWorkspace(original)
+    XCTAssertEqual(board.chatEntries.last?.status, .failed)
+  }
+
   func testChangeProviderKeepsCustomNameAndStoresModel() async {
     let board = board()
     let a = board.addConsole(agentID: "shell"), b = board.addConsole(agentID: "shell")

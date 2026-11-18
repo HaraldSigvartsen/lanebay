@@ -113,3 +113,13 @@ so the rest of the workspace remains available without inventing an hourly job. 
 validation prevents automatic dispatch and returns no next run. The Cron panel and CLI
 show “Ugyldig tidsplan”; the job remains removable, and saving/reloading keeps it invalid.
 Valid schedules and other jobs retain their existing behavior.
+
+
+### Chat reply ownership across workspace changes
+
+In-flight chat replies retain their originating workspace. Completion, launch failures,
+and AI screen-answer parsing use that workspace even after the user switches boards.
+Clearing a conversation cancels only that workspace’s reply watchers. Completed replies
+are saved in the original transcript without changing the selected workspace. This also
+applies to replies started by Cron and wires; scheduling and wire delivery still depend
+on the active workspace, and Cron still requires the app to remain open.
