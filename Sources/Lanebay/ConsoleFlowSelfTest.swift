@@ -12,6 +12,12 @@ enum ConsoleFlowSelfTest {
       await verifyRestoredLayout(on: board, directory: directory)
       return
     }
+    if LaunchIsolation.phase == "cron", LaunchIsolation.root != nil {
+      _ = board.createWorkspace(name: "Cron isolation")
+      let notes = await exerciseCronHistory(on: board)
+      await LaunchSnapshot.write(board: board, to: directory, notes: notes)
+      return
+    }
     var notes: [String] = ["flow=console-echo"]
     let work = LaunchIsolation.root ?? FileManager.default.temporaryDirectory
     guard LaunchIsolation.root != nil else {
@@ -1161,7 +1167,7 @@ enum ConsoleFlowSelfTest {
     guard let root = LaunchIsolation.root, let owner = board.activeWorkspaceID else { return ["cronHistory=false"] }
     let receiptName = "cron-history-\(UUID().uuidString)"
     let receipt = root.appendingPathComponent(receiptName)
-    let replyToken = "cron-reply-\(UUID().uuidString)"
+    let replyToken = "cron-\(UUID().uuidString.prefix(8))"
     let card = board.addConsole(agentID: "shell", cwd: root)
     board.renameConsole(card, to: "Cron test")
     let other = board.addConsole(agentID: "shell", cwd: root)
@@ -1172,6 +1178,9 @@ enum ConsoleFlowSelfTest {
     }
     board.renameConsole(card, to: "Cron renamed")
     board.renameConsole(other, to: "Cron test")
+    let wireTarget = board.addConsole(agentID: "shell", cwd: root)
+    board.renameConsole(wireTarget, to: "Cron wire receiver")
+    _ = board.addWire(from: card, to: wireTarget, mode: .everyReply)
     board.setCronJobEnabled(job.id, false)
     board.runCronJob(job.id)
     let delivered = await waitUntil(.seconds(8)) {
@@ -1186,8 +1195,18 @@ enum ConsoleFlowSelfTest {
         $0.kind == .reply && $0.from == card && $0.status == .done && $0.text.contains(replyToken)
       } == true
     }
+    let wireDelivered = await waitUntil(.seconds(30)) {
+      // The shell's line editor can insert cursor escapes and wraps inside the marker.
+      let raw = board.recentConsoleOutput(wireTarget, maxBytes: 16_384) ?? ""
+      return AgentTaskContract.plainText(raw).filter { !$0.isWhitespace }.contains(replyToken)
+    }
+    let wireRunning = board.sessions[wireTarget]?.isRunning == true
     let replyIsolated = board.chatEntries.isEmpty
+    let wireIsolated = board.workspaces.first { $0.id == owner }?.chat.contains {
+      $0.kind == .wire && $0.from == card && $0.to == wireTarget && $0.text.contains(replyToken)
+    } == true && board.chatEntries.isEmpty
     board.switchWorkspace(owner)
+    await board.closeConsole(wireTarget)
     await board.closeConsole(card)
     board.runCronJob(job.id)
     let deletedTargetIsolated = board.sessions[other] == nil
@@ -1195,6 +1214,7 @@ enum ConsoleFlowSelfTest {
     let history = board.cronJobs.first { $0.id == job.id }?.history ?? []
     return ["cronDelivered=\(delivered)", "cronTargetIsolated=\(isolated)",
       "cronReplyAfterWorkspaceSwitch=\(replyFinished)", "cronReplyWorkspaceIsolated=\(replyIsolated)",
+      "cronWireRunning=\(wireRunning)", "cronWireAfterWorkspaceSwitch=\(wireDelivered)", "cronWireWorkspaceIsolated=\(wireIsolated)",
       "cronDeletedTargetIsolated=\(deletedTargetIsolated)",
       "cronHistory=\(history.count == 2 && history[0].result.contains("Fant ikke kortet") && history[1].result.contains("Sendt til"))"]
   }

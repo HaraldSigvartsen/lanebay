@@ -13,11 +13,73 @@ final class WireBoardTests: XCTestCase {
     }
     let board = BoardViewModel(
       store: WorkspaceStore(rootURL: root.appendingPathComponent("workspaces")), autosaveDelay: .seconds(60),
+      processEnvironment: [
+        "HOME": root.path, "ZDOTDIR": root.path, "HISTFILE": root.appendingPathComponent("history").path,
+        "SHELL": "/bin/zsh"
+      ],
       usageTracker: UsageStatsTracker(store: UsageStatsStore(rootURL: root.appendingPathComponent("usage"))),
       settings: SettingsViewModel(store: AppPreferencesStore(rootURL: root.appendingPathComponent("preferences"))),
       homeDirectory: root)
     _ = board.createWorkspace(name: "Tråder")
     return board
+  }
+
+  func testFinishedReplyRoutesOriginalWiresAfterWorkspaceSwitch() async throws {
+    for mode in [WireMode.everyReply, .handoff] {
+      let board = board()
+      addTeardownBlock { await board.shutdown() }
+      let owner = try XCTUnwrap(board.activeWorkspaceID)
+      let source = board.addConsole(agentID: "opencode")
+      let target = board.addConsole(agentID: "shell", cwd: board.homeDirectory)
+      board.renameConsole(source, to: "Original source")
+      board.renameConsole(target, to: "Original target")
+      guard case .success = board.addWire(from: source, to: target, mode: mode) else {
+        return XCTFail("wire missing")
+      }
+      board.beginChatReply(for: source)
+      let work = try XCTUnwrap(board.chatWorking[source])
+      let other = board.createWorkspace(name: "Other")
+      let decoy = board.addConsole(agentID: "shell")
+      board.renameConsole(decoy, to: "Original target")
+      board.finishReply(source, work: work, status: .done, note: nil, screenAnswer: "Workspace reply marker")
+
+      let deadline = Date().addingTimeInterval(8)
+      while Date() < deadline, !String(decoding: board.sessions[target]?.recentOutput ?? Data(), as: UTF8.self).contains("Workspace reply marker") {
+        try await Task.sleep(for: .milliseconds(100))
+      }
+      XCTAssertEqual(board.activeWorkspaceID, other)
+      XCTAssertTrue(board.chatEntries.isEmpty)
+      XCTAssertNil(board.sessions[decoy])
+      XCTAssertTrue(board.sessions[target]?.isRunning == true, "stopped target in original workspace must start")
+      XCTAssertTrue(String(decoding: board.sessions[target]?.recentOutput ?? Data(), as: UTF8.self).contains("Workspace reply marker"))
+      let original = try XCTUnwrap(board.workspaces.first { $0.id == owner })
+      let entry = try XCTUnwrap(original.chat.first { $0.kind == .wire })
+      XCTAssertEqual(entry.from, source)
+      XCTAssertEqual(entry.to, target)
+      XCTAssertTrue(entry.text.contains("Original source"))
+      XCTAssertTrue(entry.text.contains("Workspace reply marker"))
+      XCTAssertEqual(original.nodes.first { $0.id == target }?.notStarted, false)
+      board.switchWorkspace(owner)
+      await board.closeConsole(target)
+    }
+  }
+
+  func testWireAIReplyBelongsToSourceWorkspace() throws {
+    let board = board()
+    addTeardownBlock { await board.shutdown() }
+    let owner = try XCTUnwrap(board.activeWorkspaceID)
+    let source = board.addConsole(agentID: "shell")
+    let target = board.addConsole(agentID: "opencode")
+    guard case .success = board.addWire(from: source, to: target, mode: .everyReply) else {
+      return XCTFail("wire missing")
+    }
+    _ = board.createWorkspace(name: "Other")
+    board.deliverAlongWires(from: source, mode: .everyReply, body: "Original reply")
+    XCTAssertTrue(board.chatEntries.isEmpty)
+    XCTAssertEqual(board.chatWorking[target]?.workspaceID, owner)
+    XCTAssertEqual(board.workspaces.first { $0.id == owner }?.chat.map(\.kind), [.wire, .reply])
+    // Cancel before the scheduled delivery can start an external CLI.
+    board.setShuttingDownForTesting(true)
   }
 
   func testDraggingFromAPortOntoACardMakesAFacingWire() {

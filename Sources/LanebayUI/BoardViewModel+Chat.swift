@@ -76,8 +76,8 @@ extension BoardViewModel {
     }
   }
 
-  func appendChat(_ entry: ChatEntry) {
-    editWorkspace { ws in
+  func appendChat(_ entry: ChatEntry, workspaceID: UUID? = nil) {
+    editWorkspace(workspaceID: workspaceID) { ws in
       ws.chat.append(entry)
       if ws.chat.count > Self.chatLimit { ws.chat.removeFirst(ws.chat.count - Self.chatLimit) }
     }
@@ -144,13 +144,13 @@ extension BoardViewModel {
   }
 
   /// Opens a reply block for `id` and watches its output until it goes quiet.
-  func beginChatReply(for id: UUID, sent: String? = nil) {
-    guard let workspaceID = activeWorkspaceID else { return }
+  func beginChatReply(for id: UUID, sent: String? = nil, workspaceID: UUID? = nil) {
+    guard let workspaceID = workspaceID ?? activeWorkspaceID else { return }
     if let old = chatWorking[id] {
       updateChat(old.entryID, workspaceID: old.workspaceID) { if $0.status == .working { $0.status = .done } }
     }
     let entry = ChatEntry(kind: .reply, text: "", from: id, status: .working)
-    appendChat(entry)
+    appendChat(entry, workspaceID: workspaceID)
     let startByte = sessions[id].map { $0.isRunning && !$0.isClosed ? $0.outputByteCount : 0 } ?? 0
     let work = ChatWork(entryID: entry.id, workspaceID: workspaceID, started: Date(), startByte: startByte, sent: sent)
     chatWorking[id] = work
@@ -250,7 +250,10 @@ extension BoardViewModel {
   /// Starts a stopped card and waits until its program is up and has stopped printing its banner.
   func ensureRunning(_ id: UUID) async -> Bool {
     if let session = sessions[id], session.isRunning, !session.isClosed { return true }
-    await restartConsole(id)
+    guard let workspaceID = workspaces.first(where: { ws in
+      ws.nodes.contains { $0.id == id && $0.kind == .console }
+    })?.id else { return false }
+    await restartConsole(id, workspaceID: workspaceID)
     let deadline = Date().addingTimeInterval(25)
     var lastBytes = -1
     var quietSince = Date()

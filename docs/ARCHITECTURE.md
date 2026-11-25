@@ -123,3 +123,12 @@ Clearing a conversation cancels only that workspace’s reply watchers. Complete
 are saved in the original transcript without changing the selected workspace. This also
 applies to replies started by Cron and wires; scheduling and wire delivery still depend
 on the active workspace, and Cron still requires the app to remain open.
+
+### Wire delivery across workspace switches
+
+A running console keeps its workspace ownership when another workspace is selected.
+Reply and handoff wires resolve the source workspace, use its recipient provider and
+card titles, and append messages and chained AI replies to its transcript. Stopped
+recipients start in that workspace without selecting it. Routing ignores wires whose
+endpoints are missing; existing hop and cooldown limits still apply. Cron scheduling
+itself still requires the active workspace and an open application.

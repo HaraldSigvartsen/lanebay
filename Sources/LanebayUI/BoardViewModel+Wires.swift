@@ -124,7 +124,7 @@ extension BoardViewModel {
   func routeReplyIfFinished(_ id: UUID, from old: AgentStatus, to new: AgentStatus) {
     // A chat reply in progress routes itself when it finishes (see finishReply).
     guard old == .running, new == .idle || new == .waitingForInput, chatWorking[id] == nil,
-      wires.contains(where: { $0.mode == .everyReply && $0.target(sending: id) != nil })
+      workspaces.contains(where: { $0.wires.contains { $0.mode == .everyReply && $0.target(sending: id) != nil } })
     else { return }
     let raw = recentConsoleOutput(id, maxBytes: 16_384) ?? ""
     let lines = AgentTaskContract.plainText(raw).split(separator: "\n").map(String.init)
@@ -134,21 +134,27 @@ extension BoardViewModel {
 
   /// Routes one message from `source` and writes it into each target console.
   public func deliverAlongWires(from source: UUID, mode: WireMode, body: String, now: Date = Date()) {
-    let current = wires
+    // A process keeps running when its board is hidden. Resolve its owner before routing,
+    // and keep that workspace for transcripts, provider lookup and any chained reply.
+    guard let owner = workspaces.first(where: { ws in
+      ws.nodes.contains { $0.id == source && $0.kind == .console }
+    }) else { return }
+    let nodes = Dictionary(uniqueKeysWithValues: owner.nodes.filter { $0.kind == .console }.map { ($0.id, $0) })
+    let current = owner.wires.filter { nodes[$0.from] != nil && nodes[$0.to] != nil }
     guard current.contains(where: { $0.target(sending: source) != nil }) else { return }
     let result = wireRouter.route(from: source, mode: mode, wires: current, now: now)
-    let sourceTitle = consoleTitle(source)
+    let sourceTitle = nodes[source]?.title ?? "Console"
     for (wireID, reason) in result.skipped where reason == .tooManyHops || reason == .coolingDown {
-      guard let wire = wire(wireID), let target = wire.target(sending: source) else { continue }
+      guard let wire = current.first(where: { $0.id == wireID }), let target = wire.target(sending: source) else { continue }
       let why = reason == .tooManyHops ? "Stoppet: for mange ledd i kjeden (sløyfevern)" : "Venter: sendte nettopp på denne tråden"
-      recordActivity(.wire, title: "\(sourceTitle) → \(consoleTitle(target))", detail: why)
+      recordActivity(.wire, title: "\(sourceTitle) → \(nodes[target]?.title ?? "Console")", detail: why)
     }
     for delivery in result.deliveries {
-      guard let wire = wire(delivery.wireID) else { continue }
-      let targetTitle = consoleTitle(delivery.target)
+      guard let wire = current.first(where: { $0.id == delivery.wireID }) else { continue }
+      let targetTitle = nodes[delivery.target]?.title ?? "Console"
       let message = WireMessage.compose(fromTitle: sourceTitle, instruction: wire.instruction, body: body)
       let targetIsShell = AgentTaskContract.isShellProvider(
-        workspace?.nodes.first { $0.id == delivery.target }?.agentID ?? "shell")
+        nodes[delivery.target]?.agentID ?? "shell")
       let text = targetIsShell ? WireMessage.forShell(message) : message
       let target = delivery.target
       let wasRunning = sessions[target]?.isRunning == true
@@ -161,8 +167,8 @@ extension BoardViewModel {
       if !wasRunning {
         recordActivity(.wire, title: "\(sourceTitle) → \(targetTitle)", detail: "Starter \(targetTitle) før meldingen sendes")
       }
-      appendChat(ChatEntry(kind: .wire, text: message, from: source, to: target))
-      if !targetIsShell { beginChatReply(for: target) }
+      appendChat(ChatEntry(kind: .wire, text: message, from: source, to: target), workspaceID: owner.id)
+      if !targetIsShell { beginChatReply(for: target, workspaceID: owner.id) }
       wirePulses[wire.id] = now
       recordActivity(
         .wire, title: "\(sourceTitle) → \(targetTitle)",

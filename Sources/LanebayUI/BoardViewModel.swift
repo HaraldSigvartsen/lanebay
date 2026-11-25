@@ -691,10 +691,14 @@ public final class BoardViewModel {
   }
 
   public func startConsole(_ id: UUID) async {
+    guard let workspaceID = activeWorkspaceID else { return }
+    await startConsole(id, workspaceID: workspaceID)
+  }
+
+  func startConsole(_ id: UUID, workspaceID: UUID) async {
     guard !isShuttingDown, sessions[id] == nil,
-      let node = workspace?.nodes.first(where: { $0.id == id && $0.kind == .console })
+      let node = workspaces.first(where: { $0.id == workspaceID })?.nodes.first(where: { $0.id == id && $0.kind == .console })
     else { return }
-    let workspaceID = activeWorkspaceID
     let requestedAgentID = node.agentID ?? "shell"
     if requestedAgentID == OrchestratorKind.agentID {
       beginOrchestrator(id, workspaceID: workspaceID)
@@ -765,7 +769,7 @@ public final class BoardViewModel {
       let model = node.model?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
       recordActivity(
         .start, title: node.title, detail: model.isEmpty ? executable : "\(executable) · \(model)")
-      if let workspaceID, let workspace = workspaces.first(where: { $0.id == workspaceID }) {
+      if let workspace = workspaces.first(where: { $0.id == workspaceID }) {
         usageTracker.sessionStarted(
           id: id, workspaceID: workspaceID, workspaceName: workspace.name,
           agent: template.id, status: console.status.rawValue, at: loopClock())
@@ -943,15 +947,20 @@ public final class BoardViewModel {
 
   /// Stops the live process and starts the same card again. The node, group, and lead stay.
   public func restartConsole(_ id: UUID) async {
+    guard let workspaceID = activeWorkspaceID else { return }
+    await restartConsole(id, workspaceID: workspaceID)
+  }
+
+  func restartConsole(_ id: UUID, workspaceID: UUID) async {
     guard !isShuttingDown,
-      workspace?.nodes.contains(where: { $0.id == id && $0.kind == .console }) == true
+      workspaces.first(where: { $0.id == workspaceID })?.nodes.contains(where: { $0.id == id && $0.kind == .console }) == true
     else { return }
     let epoch = bumpConsoleEpoch(id)
     await releaseConsoleSession(id)
     guard !isShuttingDown, consoleEpoch[id] == epoch,
-      workspace?.nodes.contains(where: { $0.id == id && $0.kind == .console }) == true
+      workspaces.first(where: { $0.id == workspaceID })?.nodes.contains(where: { $0.id == id && $0.kind == .console }) == true
     else { return }
-    await startConsole(id)
+    await startConsole(id, workspaceID: workspaceID)
   }
 
   private func bumpConsoleEpoch(_ id: UUID) -> Int {

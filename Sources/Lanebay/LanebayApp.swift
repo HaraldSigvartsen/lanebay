@@ -254,7 +254,7 @@ enum LaunchIsolation {
     try? FileManager.default.removeItem(at: marker)
     let phase = raw.trimmingCharacters(in: .whitespacesAndNewlines)
     switch phase {
-    case "arrange", "verify": return phase
+    case "arrange", "verify", "cron": return phase
     default: return nil
     }
   }
