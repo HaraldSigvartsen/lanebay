@@ -20,8 +20,10 @@ extension BoardViewModel {
   }
 
   public func runDueCronJobs(now: Date) {
-    for job in cronJobs where CronPlanner.isDue(job, now: now, reference: cronReference) {
-      runCronJob(job.id, now: now)
+    for owner in workspaces {
+      for job in owner.cronJobs where CronPlanner.isDue(job, now: now, reference: cronReference) {
+        runCronJob(job.id, workspaceID: owner.id, now: now)
+      }
     }
   }
 
@@ -46,21 +48,28 @@ extension BoardViewModel {
 
   /// Runs a job now (also used by "Kjør nå" and `lanebay cron run`).
   public func runCronJob(_ id: UUID, now: Date = Date()) {
-    guard let job = cronJobs.first(where: { $0.id == id }) else { return }
-    guard let card = cronTarget(job) else {
-      editCronJob(id) { $0.recordRun(at: now, result: "Fant ikke kortet «\(job.card)»") }
-      return
-    }
-    if job.cardID == nil { editCronJob(id) { $0.cardID = card } }
-    appendChat(ChatEntry(kind: .system, text: "⏰ Planlagt jobb «\(job.name)» (\(CronPlanner.describe(job.schedule)))"))
-    let sent = sendChat(job.prompt, to: card)
-    let title = workspace?.nodes.first { $0.id == card }?.title ?? job.card
-    editCronJob(id) { $0.recordRun(at: now, result: sent ? "Sendt til \(title)" : "Kunne ikke sende") }
+    guard let workspaceID = activeWorkspaceID else { return }
+    runCronJob(id, workspaceID: workspaceID, now: now)
   }
 
-  private func cronTarget(_ job: CronJob) -> UUID? {
-    if let id = job.cardID { return consoleNodes.contains { $0.id == id } ? id : nil }
-    return resolveCard(job.card)
+  private func runCronJob(_ id: UUID, workspaceID: UUID, now: Date) {
+    guard let owner = workspaces.first(where: { $0.id == workspaceID }),
+      let job = owner.cronJobs.first(where: { $0.id == id }) else { return }
+    guard let card = cronTarget(job, workspaceID: workspaceID) else {
+      editCronJob(id, workspaceID: workspaceID) { $0.recordRun(at: now, result: "Fant ikke kortet «\(job.card)»") }
+      return
+    }
+    if job.cardID == nil { editCronJob(id, workspaceID: workspaceID) { $0.cardID = card } }
+    appendChat(ChatEntry(kind: .system, text: "⏰ Planlagt jobb «\(job.name)» (\(CronPlanner.describe(job.schedule)))"), workspaceID: workspaceID)
+    let sent = sendChat(job.prompt, to: card, workspaceID: workspaceID)
+    let title = owner.nodes.first { $0.id == card }?.title ?? job.card
+    editCronJob(id, workspaceID: workspaceID) { $0.recordRun(at: now, result: sent ? "Sendt til \(title)" : "Kunne ikke sende") }
+  }
+
+  private func cronTarget(_ job: CronJob, workspaceID: UUID? = nil) -> UUID? {
+    guard let owner = workspaces.first(where: { $0.id == (workspaceID ?? activeWorkspaceID) }) else { return nil }
+    if let id = job.cardID { return owner.nodes.contains { $0.id == id && $0.kind == .console } ? id : nil }
+    return resolveCard(job.card, workspaceID: owner.id)
   }
 
   /// Current name for a bound recipient; keep the saved reference when its card is gone.
@@ -68,8 +77,8 @@ extension BoardViewModel {
     cronTarget(job).map { consoleTitle($0) } ?? job.card
   }
 
-  private func editCronJob(_ id: UUID, _ change: (inout CronJob) -> Void) {
-    editWorkspace { ws in
+  private func editCronJob(_ id: UUID, workspaceID: UUID? = nil, _ change: (inout CronJob) -> Void) {
+    editWorkspace(workspaceID: workspaceID) { ws in
       if let index = ws.cronJobs.firstIndex(where: { $0.id == id }) { change(&ws.cronJobs[index]) }
     }
   }

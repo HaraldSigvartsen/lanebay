@@ -21,7 +21,7 @@ struct CronJobsSection: View {
       HStack {
         VStack(alignment: .leading, spacing: 2) {
           Text("Planlagte meldinger").font(.headline)
-          Text("Lanebay starter kortet og sender meldingen til fast tid – svaret havner i chatten. Appen må være åpen.")
+          Text("Lanebay starter kortet og sender meldingen til fast tid – svaret havner i chatten. Kjører i alle arbeidsområder mens appen er åpen.")
             .font(.caption).foregroundStyle(.secondary)
         }
         Spacer()

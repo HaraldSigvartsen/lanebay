@@ -183,7 +183,11 @@ extension BoardViewModel: WireControlling {
   }
 
   public func resolveCard(_ reference: String) -> UUID? {
-    let consoles = (workspace?.nodes ?? []).filter { $0.kind == .console }
+    resolveCard(reference, workspaceID: activeWorkspaceID)
+  }
+
+  func resolveCard(_ reference: String, workspaceID: UUID?) -> UUID? {
+    let consoles = (workspaces.first { $0.id == workspaceID }?.nodes ?? []).filter { $0.kind == .console }
     if let exact = consoles.first(where: { $0.title.caseInsensitiveCompare(reference) == .orderedSame }) { return exact.id }
     let handle = TerminalHandle.slug(reference.hasPrefix("@") ? String(reference.dropFirst()) : reference)
     if let named = consoles.first(where: { TerminalHandle.slug($0.title) == handle }) { return named.id }

@@ -121,8 +121,8 @@ In-flight chat replies retain their originating workspace. Completion, launch fa
 and AI screen-answer parsing use that workspace even after the user switches boards.
 Clearing a conversation cancels only that workspace’s reply watchers. Completed replies
 are saved in the original transcript without changing the selected workspace. This also
-applies to replies started by Cron and wires; scheduling and wire delivery still depend
-on the active workspace, and Cron still requires the app to remain open.
+applies to replies started by Cron and wires. Scheduling and wire delivery resolve the
+owning workspace; Cron still requires the app to remain open.
 
 ### Wire delivery across workspace switches
 
@@ -131,4 +131,14 @@ Reply and handoff wires resolve the source workspace, use its recipient provider
 card titles, and append messages and chained AI replies to its transcript. Stopped
 recipients start in that workspace without selecting it. Routing ignores wires whose
 endpoints are missing; existing hop and cooldown limits still apply. Cron scheduling
-itself still requires the active workspace and an open application.
+checks every loaded workspace while the application remains open.
+
+### Cron across loaded workspaces
+
+The app-open scheduler checks every loaded workspace without changing the selected board.
+Each run resolves its recipient within the owning workspace, including legacy name references,
+and writes the scheduled notice, literal prompt, reply and bounded send-attempt history there.
+A stopped recipient can start while its board is hidden. Recording the attempt before the next
+scheduler tick prevents duplicate dispatch at the same time; disabled, invalid and not-yet-due
+jobs remain untouched. Manual Cron controls and the job list still apply to the selected board.
+Cron still requires the app to remain open; execution after quitting is not implemented.

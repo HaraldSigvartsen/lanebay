@@ -128,17 +128,33 @@ extension BoardViewModel {
       return false
     }
     let displayed = target.map { "@\(handle(for: $0)) \(trimmed)" } ?? trimmed
-    appendChat(ChatEntry(kind: .user, text: displayed, targets: recipients.targets))
-    for target in recipients.targets {
+    guard let workspaceID = activeWorkspaceID else { return false }
+    return dispatchChat(recipients.body, displayed: displayed, targets: recipients.targets, workspaceID: workspaceID)
+  }
+
+  /// Literal single-recipient delivery for scheduled jobs, including hidden workspaces.
+  @discardableResult
+  func sendChat(_ text: String, to target: UUID, workspaceID: UUID) -> Bool {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty,
+      let node = workspaces.first(where: { $0.id == workspaceID })?.nodes.first(where: { $0.id == target && $0.kind == .console })
+    else { return false }
+    return dispatchChat(trimmed, displayed: "@\(TerminalHandle.slug(node.title)) \(trimmed)", targets: [target], workspaceID: workspaceID)
+  }
+
+  private func dispatchChat(_ body: String, displayed: String, targets: [UUID], workspaceID: UUID) -> Bool {
+    guard let owner = workspaces.first(where: { $0.id == workspaceID }) else { return false }
+    appendChat(ChatEntry(kind: .user, text: displayed, targets: targets), workspaceID: workspaceID)
+    for target in targets {
       resetWireHops(target)
-      beginChatReply(for: target, sent: recipients.body)
-      let title = consoleTitle(target)
-      deliverToCard(recipients.body, to: target) { [weak self] delivered in
+      beginChatReply(for: target, sent: body, workspaceID: workspaceID)
+      let title = owner.nodes.first { $0.id == target }?.title ?? "Console"
+      deliverToCard(body, to: target) { [weak self] delivered in
         guard let self, !delivered, let work = self.chatWorking[target] else { return }
         self.updateChat(work.entryID, workspaceID: work.workspaceID) { $0.text = "\(title) kunne ikke startes."; $0.status = .failed }
         self.chatWorking[target] = nil
       }
-      recordActivity(.send, title: title, detail: BoardViewModel.activityPreview(recipients.body))
+      recordActivity(.send, title: title, detail: BoardViewModel.activityPreview(body))
     }
     return true
   }

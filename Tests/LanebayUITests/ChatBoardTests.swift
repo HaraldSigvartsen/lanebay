@@ -141,6 +141,81 @@ final class ChatBoardTests: XCTestCase {
     XCTAssertEqual(second?.title, "Utvikler")
   }
 
+  func testDueCronRunsEveryWorkspaceWithoutChangingSelection() throws {
+    let board = board()
+    addTeardownBlock { await board.shutdown() }
+    let owner = try XCTUnwrap(board.activeWorkspaceID)
+    let target = board.addConsole(agentID: "shell")
+    board.renameConsole(target, to: "Bygger")
+    let first = try board.addCronJob(name: "Original", card: "Bygger", prompt: "echo @alle",
+                                     schedule: .every(minutes: 5)).get()
+    let selected = board.createWorkspace(name: "Selected")
+    let decoy = board.addConsole(agentID: "shell")
+    board.renameConsole(decoy, to: "Bygger")
+    let second = try board.addCronJob(name: "Selected", card: "Bygger", prompt: "echo selected",
+                                      schedule: .every(minutes: 5)).get()
+    let now = Date().addingTimeInterval(301)
+    board.runDueCronJobs(now: now)
+    board.runDueCronJobs(now: now)
+    board.setShuttingDownForTesting(true) // Inspect routing without launching a shell.
+
+    let original = try XCTUnwrap(board.workspaces.first { $0.id == owner })
+    XCTAssertEqual(board.activeWorkspaceID, selected)
+    XCTAssertEqual(original.cronJobs.first?.id, first.id)
+    XCTAssertEqual(original.cronJobs.first?.history.count, 1)
+    XCTAssertEqual(original.cronJobs.first?.lastRun, now)
+    XCTAssertEqual(original.chat.first { $0.kind == .user }?.targets, [target])
+    XCTAssertEqual(board.chatWorking[target]?.workspaceID, owner)
+    XCTAssertEqual(board.chatWorking[target]?.sent, "echo @alle")
+    XCTAssertEqual(board.cronJobs.first?.id, second.id)
+    XCTAssertEqual(board.cronJobs.first?.history.count, 1)
+    XCTAssertEqual(board.chatEntries.first { $0.kind == .user }?.targets, [decoy])
+    XCTAssertEqual(board.chatWorking[decoy]?.workspaceID, selected)
+    let restored = try JSONDecoder().decode(Workspace.self, from: JSONEncoder().encode(original))
+    XCTAssertEqual(restored.cronJobs.first?.history.count, 1)
+    XCTAssertEqual(restored.chat.first { $0.kind == .user }?.targets, [target])
+  }
+
+  func testHiddenCronResolvesLegacyTargetsLocallyAndSkipsIneligibleJobs() throws {
+    let board = board()
+    addTeardownBlock { await board.shutdown() }
+    let owner = try XCTUnwrap(board.activeWorkspaceID)
+    let target = board.addConsole(agentID: "shell")
+    board.renameConsole(target, to: "Bygger")
+    let created = Date().addingTimeInterval(-301)
+    let legacy = CronJob(name: "Legacy", card: "@bygger", prompt: "echo legacy", schedule: .every(minutes: 5), createdAt: created)
+    var missing = legacy
+    missing.id = UUID()
+    missing.cardID = UUID()
+    var disabled = legacy
+    disabled.id = UUID()
+    disabled.enabled = false
+    var future = legacy
+    future.id = UUID()
+    future.createdAt = Date()
+    var invalid = legacy
+    invalid.id = UUID()
+    invalid.schedule = .every(minutes: Int.max)
+    board.editWorkspace { $0.cronJobs = [legacy, missing, disabled, future, invalid] }
+    let selected = board.createWorkspace(name: "Selected")
+    let decoy = board.addConsole(agentID: "shell")
+    board.renameConsole(decoy, to: "Bygger")
+    board.runDueCronJobs(now: Date())
+    board.setShuttingDownForTesting(true)
+
+    let original = try XCTUnwrap(board.workspaces.first { $0.id == owner })
+    XCTAssertEqual(board.activeWorkspaceID, selected)
+    XCTAssertEqual(original.cronJobs[0].cardID, target)
+    XCTAssertEqual(original.cronJobs[0].history.count, 1)
+    XCTAssertEqual(original.cronJobs[1].history.count, 1)
+    XCTAssertTrue(original.cronJobs[1].lastResult?.contains("Fant ikke kortet") == true)
+    XCTAssertEqual(Array(original.cronJobs.suffix(3)), [disabled, future, invalid])
+    XCTAssertTrue(board.chatEntries.isEmpty)
+    XCTAssertNil(board.chatWorking[decoy])
+    XCTAssertEqual(original.chat.filter { $0.kind == .user }.count, 1)
+    XCTAssertEqual(board.chatWorking[target]?.workspaceID, owner)
+  }
+
   func testCronJobsAddValidateAndRun() {
     let board = board()
     let a = board.addConsole(agentID: "shell")

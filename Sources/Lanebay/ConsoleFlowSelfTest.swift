@@ -1181,15 +1181,18 @@ enum ConsoleFlowSelfTest {
     let wireTarget = board.addConsole(agentID: "shell", cwd: root)
     board.renameConsole(wireTarget, to: "Cron wire receiver")
     _ = board.addWire(from: card, to: wireTarget, mode: .everyReply)
-    board.setCronJobEnabled(job.id, false)
-    board.runCronJob(job.id)
+    let selected = board.createWorkspace(name: "Reply isolation")
+    board.clearChat()
+    let due = (job.createdAt ?? Date()).addingTimeInterval(301)
+    board.runDueCronJobs(now: due)
+    board.runDueCronJobs(now: due)
+    let scheduled = board.workspaces.first { $0.id == owner }?.cronJobs.first { $0.id == job.id }
+    let scheduledOnce = scheduled?.lastRun == due && scheduled?.history.count == 1
     let delivered = await waitUntil(.seconds(8)) {
       (try? String(contentsOf: receipt, encoding: .utf8)) == "@alle @cron-observer"
     }
     let isolated = board.sessions[other] == nil
-      && board.chatEntries.last(where: { $0.kind == .user })?.targets == [card]
-    _ = board.createWorkspace(name: "Reply isolation")
-    board.clearChat()
+      && board.workspaces.first { $0.id == owner }?.chat.last(where: { $0.kind == .user })?.targets == [card]
     let replyFinished = await waitUntil(.seconds(12)) {
       board.workspaces.first { $0.id == owner }?.chat.contains {
         $0.kind == .reply && $0.from == card && $0.status == .done && $0.text.contains(replyToken)
@@ -1205,14 +1208,17 @@ enum ConsoleFlowSelfTest {
     let wireIsolated = board.workspaces.first { $0.id == owner }?.chat.contains {
       $0.kind == .wire && $0.from == card && $0.to == wireTarget && $0.text.contains(replyToken)
     } == true && board.chatEntries.isEmpty
+    let selectionPreserved = board.activeWorkspaceID == selected
     board.switchWorkspace(owner)
+    board.setCronJobEnabled(job.id, false)
     await board.closeConsole(wireTarget)
     await board.closeConsole(card)
     board.runCronJob(job.id)
     let deletedTargetIsolated = board.sessions[other] == nil
     await board.closeConsole(other)
     let history = board.cronJobs.first { $0.id == job.id }?.history ?? []
-    return ["cronDelivered=\(delivered)", "cronTargetIsolated=\(isolated)",
+    return ["cronScheduledAcrossWorkspaces=\(scheduledOnce && delivered)", "cronSelectionPreserved=\(selectionPreserved)",
+      "cronDelivered=\(delivered)", "cronTargetIsolated=\(isolated)",
       "cronReplyAfterWorkspaceSwitch=\(replyFinished)", "cronReplyWorkspaceIsolated=\(replyIsolated)",
       "cronWireRunning=\(wireRunning)", "cronWireAfterWorkspaceSwitch=\(wireDelivered)", "cronWireWorkspaceIsolated=\(wireIsolated)",
       "cronDeletedTargetIsolated=\(deletedTargetIsolated)",
